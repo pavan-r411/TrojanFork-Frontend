@@ -6,6 +6,6 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "start:static": "python3 -m http.server 5173 --bind 127.0.0.1",
-    "test": "node scripts/nutrition-test.mjs && node scripts/live-plan-test.mjs && node --experimental-websocket scripts/smoke.mjs"
+    "test": "node scripts/nutrition-test.mjs && node scripts/targets-persistence-test.mjs && node scripts/live-plan-test.mjs && node --experimental-websocket scripts/smoke.mjs"
   }
 }

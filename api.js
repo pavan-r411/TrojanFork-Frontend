@@ -85,6 +85,9 @@ export const apiClient = {
   saveProfile: profile => request('/v1/profile', profile, 'PUT'),
   /** Estimate daily calorie/macro targets from onboarding body stats. */
   estimateTargets: body => request('/v1/profile/targets', body),
+  /** Check whether a live GPS point is inside the USC DPS zone (Off-Campus only). */
+  locationZone: ({lat, lng, campusId = 'usc_upc'}) =>
+    request(`/v1/location/zone?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}&campus_id=${encodeURIComponent(campusId)}`),
   getPlan: (date, mode) => request(`/v1/plans?date=${encodeURIComponent(date)}&mode=${encodeURIComponent(mode)}`),
   savePlan: body => request('/v1/plans', body, 'PUT'),
   swapPreview: body => request('/v1/plans/swap-preview', body),

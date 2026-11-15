@@ -1,4 +1,4 @@
-import { nutritionState, loadNutrition, logMeal, removeLog, NutritionSummary, DailyNutritionDashboard, mealNutrition } from './nutrition.js';
+import { nutritionState, loadNutrition, logMeal, removeLog, NutritionSummary, EatenTodaySection, NutritionTargetsForm, mealNutrition, hasAnyTarget } from './nutrition.js';
 import { apiClient, toMeal, directionsUrl, directionsUnavailable } from './api.js';
 import { config } from './config.js';
 import { getOptions, meals } from './menu.js';
@@ -6,8 +6,8 @@ import { getSessionToken, clearSession } from './auth.js';
 import { previewSwap } from './live-plan.js';
 
 const app = document.querySelector('#app');
-const profileLink = document.querySelector('#profile-link');
 const storageKey = 'trojanplate-profile-v1';
+const NAV_ACTIONS = { home: 'home', plan: 'plan', profile: 'profile', onboarding: 'profile', auth: 'profile', context: 'home', results: 'home' };
 const plansKey = 'trojanplate-plans-v3';
 const defaults = {
   goal: 'Eat balanced meals', diet: 'Any diet', allergies: '', exclusions: '',
@@ -108,14 +108,42 @@ function targetsPayload(source = profile) {
     prefer_high_protein: ['Build muscle', 'Fuel training'].includes(source.goal),
   };
 }
-/** Estimate calorie/macro targets from collected profile and store them for the day. */
-async function syncTargetsFromProfile(source = profile, {force = false} = {}) {
-  if (!config.apiBaseUrl && !config.nutritionDemo) return null;
+/**
+ * Target precedence:
+ * 1) Manual targets already saved for the day (or preferred manual)
+ * 2) Estimated targets from POST /v1/profile/targets when height_cm + weight_kg exist
+ * 3) Explicit unset — UI shows "Set targets" (never invent generic numbers)
+ *
+ * Estimate method (backend): Mifflin–St Jeor TDEE hackathon helper. Inputs: height_cm,
+ * weight_kg, optional goal_weight_kg, activity_level, age_range, nutrition_goal.
+ * Sex is not collected; male equation is used as a default adult estimate. Not medical advice.
+ */
+async function syncTargetsFromProfile(source = profile, { force = false, explicit = false } = {}) {
+  if (!config.apiBaseUrl && !config.nutritionDemo) return { ok: false, reason: 'api_unavailable' };
+  if (config.browserNutrition) {
+    const local = await import('./nutrition-local.js');
+    const current = local.daily(nutritionState.date);
+    const preferred = local.readPreferredTargets?.();
+    const hasManual = current.targets_source === 'manual' && hasAnyTarget(current.targets);
+    const preferredManual = preferred?.source === 'manual' && hasAnyTarget(preferred.targets);
+    if (!force && (hasManual || preferredManual)) {
+      if (!hasAnyTarget(current.targets) && preferredManual) {
+        nutritionState.data = local.setTargets(nutritionState.date, preferred.targets, { source: 'manual', meta: preferred.meta, remember: false });
+      }
+      return { ok: true, skipped: 'manual_preferred', targets: nutritionState.data?.targets };
+    }
+  }
   const payload = targetsPayload(source);
-  if (payload.height_cm == null || payload.weight_kg == null) return null;
+  if (payload.height_cm == null || payload.weight_kg == null) {
+    return { ok: false, reason: 'missing_body_stats', message: 'Add height (cm) and weight (kg) in Profile to estimate targets, or enter them manually.' };
+  }
+  nutritionState.targetsStatus = 'estimating';
   try {
     const estimated = await apiClient.estimateTargets(payload);
-    if (estimated?.confidence !== 'estimated' || !estimated.targets) return estimated;
+    if (estimated?.confidence !== 'estimated' || !estimated.targets) {
+      nutritionState.targetsStatus = 'error';
+      return { ok: false, reason: 'unavailable', estimated };
+    }
     const mapped = {
       calories: estimated.targets.calories_kcal ?? null,
       protein_g: estimated.targets.protein_g ?? null,
@@ -124,22 +152,21 @@ async function syncTargetsFromProfile(source = profile, {force = false} = {}) {
     };
     if (config.browserNutrition) {
       const local = await import('./nutrition-local.js');
-      const current = local.daily(nutritionState.date);
-      const hasManual = !force && nutrientsHaveValues(current.targets) && current.targets_source === 'manual';
-      if (!hasManual) {
-        nutritionState.data = local.setTargets(nutritionState.date, mapped, { source: 'profile_estimate', meta: estimated });
-      }
+      nutritionState.data = local.setTargets(nutritionState.date, mapped, {
+        source: 'profile_estimate',
+        meta: estimated,
+        remember: true,
+      });
     } else if (config.nutritionDemo) {
       const mock = await import('./nutrition-mock.js');
       nutritionState.data = mock.setTargets?.(nutritionState.date, mapped) || nutritionState.data;
     }
-    return estimated;
+    nutritionState.targetsStatus = explicit ? 'saved' : '';
+    return { ok: true, estimated, targets: mapped };
   } catch {
-    return null;
+    nutritionState.targetsStatus = 'error';
+    return { ok: false, reason: 'request_failed' };
   }
-}
-function nutrientsHaveValues(targets) {
-  return Boolean(targets && ['calories', 'protein_g', 'carbs_g', 'fat_g'].some(key => typeof targets[key] === 'number'));
 }
 function adoptPlan(plan, key) {
   if (plan.mode !== (key==='campus'?'usc_dining':'off_campus') || plan.date !== localDate()) throw new Error('The server returned a plan for a different mode or date.');
@@ -267,24 +294,47 @@ async function bootstrapSession() {
   }
 }
 
+function headerAccountHtml() {
+  if (sessionUser) {
+    const name = sessionUser.display_name || sessionUser.email || 'Trojan';
+    const short = name.includes('@') ? name.split('@')[0] : name;
+    return `<div class="account-chip is-signed-in">
+      <button type="button" class="account-name" data-action="profile" title="${escapeHtml(name)}">Hi, ${escapeHtml(short)}</button>
+      <button type="button" class="account-link" data-action="auth-signout">Sign out</button>
+    </div>`;
+  }
+  return `<div class="account-chip is-guest">
+    <span class="account-status">Guest</span>
+    <button type="button" class="account-link" data-action="auth-open">Sign in</button>
+  </div>`;
+}
+function syncHeaderAccount() {
+  const slot = document.querySelector('#header-account');
+  if (!slot) return;
+  const hide = view === 'auth';
+  slot.hidden = hide;
+  if (!hide) slot.innerHTML = headerAccountHtml();
+}
 function authView() {
   return `<section class="onboarding auth-panel">
     <div class="intro" data-enter>
-      <div><span class="eyebrow">Trojan Fork</span><h1 tabindex="-1">Sign in to<br><em>save your plate.</em></h1></div>
-      <p>Your profile and daily plan sync to your account. Or continue locally in this browser.</p>
+      <div><span class="eyebrow">Optional · nice to have</span><h1 tabindex="-1">${authMode==='login' ? 'Welcome<br><em>back.</em>' : 'Save your<br><em>plate.</em>'}</h1></div>
+      <p>${authMode==='login'
+        ? 'Pick up your plan on any device. Still fine to browse as a guest anytime.'
+        : 'A light account keeps preferences and plans with you. Guest mode stays in this browser.'}</p>
     </div>
-    <form class="panel stack" id="auth-form">
-      <div class="form-title"><span class="eyebrow">${authMode==='login'?'Welcome back':'Create account'}</span><h2 tabindex="-1">${authMode==='login'?'Sign in':'Create account'}</h2></div>
+    <form class="panel stack auth-card" id="auth-form">
+      <div class="form-title"><span class="eyebrow">${authMode==='login'?'Sign in':'Create account'}</span><h2 tabindex="-1">${authMode==='login'?'Continue where you left off':'Join Trojan Fork'}</h2><p class="small auth-reassure">Email + password only. No campus login required.</p></div>
       ${authError?`<p role="alert">${escapeHtml(authError)}</p>`:''}
-      ${authMode==='register'?`<div class="field"><label for="display_name">Display name</label><input id="display_name" name="display_name" maxlength="80" required></div>`:''}
-      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required></div>
-      <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="${authMode==='login'?'current-password':'new-password'}" minlength="8" required></div>
+      ${authMode==='register'?`<div class="field"><label for="display_name">What should we call you?</label><input id="display_name" name="display_name" maxlength="80" placeholder="e.g. Murali" required></div>`:''}
+      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" placeholder="you@usc.edu" required></div>
+      <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="${authMode==='login'?'current-password':'new-password'}" minlength="8" placeholder="${authMode==='login'?'Your password':'At least 8 characters'}" required></div>
       <div class="actions">
         <button class="primary" type="submit">${authMode==='login'?'Sign in':'Create account'}</button>
       </div>
-      <button type="button" class="quiet" data-action="auth-toggle">${authMode==='login'?'Need an account? Create one':'Already have an account? Sign in'}</button>
-      <button type="button" class="secondary" data-action="auth-skip">Continue without account</button>
-      <p class="small">Private records are scoped to your account. Local-only mode stores data in this browser.</p>
+      <button type="button" class="quiet" data-action="auth-toggle">${authMode==='login'?'New here? Create an account':'Have an account? Sign in'}</button>
+      <button type="button" class="secondary" data-action="auth-skip">Keep browsing as guest</button>
+      <p class="small auth-footnote">Guest mode works fully offline to this device. Signing in just syncs your profile and plan.</p>
     </form>
   </section>`;
 }
@@ -416,7 +466,7 @@ function onboarding() {
         ${['Gradually lose weight', 'Gradually gain weight'].includes(draft.goal) ? numberField('goalWeight', 'Goal weight (kg)', draft.goalWeight, 20, 350, .1) : ''}
         </div><label class="check"><input name="snacks" type="checkbox" ${draft.snacks ? 'checked' : ''}> Include snack ideas</label>`,
     },
-    { title: 'Make it fit campus life.', help: 'You can change these details anytime.', fields: `<div class="fields">${numberField('swipes', 'Daily meal swipes', settings.campus.swipes, 0, 20)}${numberField('diningDollars', 'Dining Dollars ($, manual)', draft.diningDollars || '', 0, 9999, .01)}</div><div class="field"><label for="origin">Default campus landmark</label><select id="origin" name="origin">${['USC Village','Tommy Trojan','Leavey Library'].map(x=>`<option ${draft.origin===x?'selected':''}>${x}</option>`).join('')}</select></div><p class="small">Suggestions are informational. Nutrition may be incomplete; verify allergens with the food provider.</p>` },
+    { title: 'Make it fit campus life.', help: 'You can change these details anytime.', fields: `<div class="fields">${numberField('swipes', 'Daily meal swipes', settings.campus.swipes, 0, 20)}${numberField('diningDollars', 'Dining Dollars ($, manual)', draft.diningDollars || '', 0, 9999, .01)}</div><div class="field"><label for="origin">Default campus landmark</label><select id="origin" name="origin">${['USC Village','Tommy Trojan','Leavey Library'].map(x=>`<option ${draft.origin===x?'selected':''}>${x}</option>`).join('')}</select><p class="small">Fallback starting point for Off-Campus when live location is off or outside the USC DPS area. USC Dining uses halls and swipes instead.</p></div><p class="small">Suggestions are informational. Nutrition may be incomplete; verify allergens with the food provider.</p>` },
   ];
   const page = pages[step];
   return `<section class="onboarding">
@@ -430,10 +480,10 @@ function onboarding() {
       <div class="form-title"><span class="eyebrow">Profile · Step ${step + 1} of ${pages.length}</span><h2 tabindex="-1">${page.title}</h2><p>${page.help}</p></div>
       ${page.fields}
       <p class="small">How recommendations work: the backend matches your preferences, restrictions, available swipes and spending limits. Verify uncertain allergen details with the provider.</p><div class="actions">
-        ${step ? '<button type="button" class="secondary" data-action="back">Back</button>' : complete ? '<button type="button" class="secondary" data-action="home">Cancel</button>' : ''}
+        ${step ? '<button type="button" class="secondary" data-action="back">Back</button>' : complete ? '<button type="button" class="secondary" data-action="profile">Cancel</button>' : ''}
         <button class="primary" type="submit">${step === pages.length - 1 ? 'Save profile' : 'Continue'} <span aria-hidden="true">→</span></button>
       </div>
-      <button type="button" class="quiet" data-action="home">Skip optional details / edit later</button>
+      <button type="button" class="quiet" data-action="${complete ? 'profile' : 'home'}">Skip optional details / edit later</button>
       ${sessionUser?'<button type="button" class="quiet" data-action="auth-signout">Sign out</button>':complete?'':'<button type="button" class="quiet" data-action="auth-skip">Back to sign in</button>'}
       ${complete?'<button type="button" class="quiet" data-action="clear">Clear saved data</button>':''}
     </form>
@@ -449,34 +499,92 @@ function foodArt(name) {
   return 'assets/art/'+(categories.find(([pattern])=>pattern.test(name))?.[1] || 'plate')+'.png';
 }
 function safeUrl(value) { try { const url=new URL(value); return ['https:','http:'].includes(url.protocol)?url.href:''; } catch { return ''; } }
+function mealJumpLinks() {
+  const slots = meals.slice(0, profile.snacks ? 4 : 3);
+  return `<nav class="meal-jump" aria-label="Jump to meals">${slots.map(meal => `<a href="#meal-${meal}">${meal}</a>`).join('')}</nav>`;
+}
+function homeNutritionLink() {
+  const d = nutritionState.data;
+  const eaten = d?.consumed?.calories;
+  const target = d?.targets?.calories;
+  const label = typeof eaten === 'number' || typeof target === 'number'
+    ? `${typeof eaten === 'number' ? Math.round(eaten) : '—'} / ${typeof target === 'number' ? Math.round(target) : '—'} kcal`
+    : 'Open nutrition';
+  return `<p class="home-nutrition-link small"><button type="button" class="quiet" data-action="plan">My Plan · ${escapeHtml(label)}</button></p>`;
+}
 function home() {
-  return `<section class="home-heading" data-enter><div><span class="eyebrow">${new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'})}</span><h1 tabindex="-1">Eat well.<br>Fight On!</h1><p class="lede">Trojan diet delights</p></div><span class="day-stamp">Made for your campus.</span></section>
-    ${sessionUser?`<p class="small">Signed in as ${escapeHtml(sessionUser.display_name || sessionUser.email)}. Plans sync to your account.</p>`:`<p class="small">Browsing locally. <button type="button" class="quiet" data-action="auth-open">Sign in</button> to sync profile and plans across devices.</p>`}
-    ${NutritionSummary(true)}
+  return `<section class="home-heading home-heading-compact" data-enter>
+      <div><span class="eyebrow">${new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'})}</span>
+      <h1 tabindex="-1">Eat well. Fight On!</h1>
+      <p class="lede">${mode==='campus' ? 'USC dining halls for today.' : `Near ${escapeHtml(settings.nearby.origin)} · ${settings.nearby.distance} mi.`}</p></div>
+    </section>
+    ${homeNutritionLink()}
     <div class="tabs" role="tablist" aria-label="Dining mode">${['campus','nearby'].map(key => `<button role="tab" id="tab-${key}" aria-controls="mode-panel" aria-selected="${mode===key}" tabindex="${mode===key ? 0 : -1}" data-action="mode" data-mode="${key}">${key==='campus' ? 'USC Dining' : 'Off-Campus'}</button>`).join('')}</div>
     <section id="mode-panel" role="tabpanel" aria-labelledby="tab-${mode}">
-      <div class="food-hero ${heroImage()?'':'without-photo'}"><div><span class="hero-label">${mode==='campus' ? 'USC Dining' : 'Near campus'}</span><h2>${mode==='campus' ? 'Good food. Close to class.' : 'Take a delicious study break.'}</h2><p>${mode==='campus' ? 'Your dining hall options, in one place.' : 'Near '+escapeHtml(settings.nearby.origin)+', within your chosen radius.'}</p></div>${heroImage()?`<img src="${escapeHtml(heroImage())}" alt="${escapeHtml(getOptions(mode,'Breakfast',profile,settings[mode])[0]?.name || 'Meal from the menu service')}" onerror="this.hidden=true;this.parentElement.classList.add('without-photo')">`:'<img src="assets/art/plate.png" alt="" aria-hidden="true">'}</div>
-      <div class="filter-row">${mode==='nearby' ? `<button class="secondary cuisine-filter" data-action="cuisines">Cuisine: ${escapeHtml(settings.nearby.cuisines.join(', ') || 'Any')}</button>` : ''}<button class="secondary" data-action="settings">${mode==='campus' ? settings.campus.swipes+' swipes available' : dollars.format(settings.nearby.perMeal)+' / meal'}</button><button class="secondary" data-action="edit">${escapeHtml(profile.diet)}</button>${mode==='nearby' ? `<button class="secondary" data-action="settings">${settings.nearby.distance} mi radius</button>` : ''}<button class="quiet" data-action="refresh">Refresh options ↻</button></div>
-      <div class="planner-layout"><div>${results()}</div><aside>${summary()}</aside></div>
+      <div class="food-hero food-hero-compact ${heroImage()?'':'without-photo'}"><div><span class="hero-label">${mode==='campus' ? 'USC Dining' : 'Near campus'}</span><p>${mode==='campus' ? 'Hall menus matched to your preferences.' : 'Walkable spots inside your radius.'}</p></div>${heroImage()?`<img src="${escapeHtml(heroImage())}" alt="" aria-hidden="true" onerror="this.hidden=true;this.parentElement.classList.add('without-photo')">`:'<img src="assets/art/plate.png" alt="" aria-hidden="true">'}</div>
+      <div class="filter-row">${mode==='nearby' ? `<button class="secondary cuisine-filter" data-action="cuisines">Cuisine: ${escapeHtml(settings.nearby.cuisines.join(', ') || 'Any')}</button>` : ''}<button class="secondary" data-action="settings">${mode==='campus' ? settings.campus.swipes+' swipes available' : dollars.format(settings.nearby.perMeal)+' / meal'}</button><button class="secondary" data-action="profile">${escapeHtml(profile.diet)}</button>${mode==='nearby' ? `<button class="secondary" data-action="settings">${settings.nearby.distance} mi radius</button>` : ''}<button class="quiet" data-action="refresh">Refresh options ↻</button></div>
+      ${mealJumpLinks()}
+      <div class="planner-layout"><div class="planner-main">${results()}</div><aside class="planner-aside">${summary({ showPlanCta: true })}</aside></div>
     </section>`;
 }
-function summary() {
+function summary({ showPlanCta = false } = {}) {
   const nearby = mode==='nearby';
   const live=settings[mode].livePlan?.summary;
   const remaining=live ? (nearby ? (live.remaining_budget_cents===null?'Unknown':dollars.format(live.remaining_budget_cents/100)) : live.remaining_swipes ?? 'Unknown') : 'Awaiting plan';
   const cash = live?.total_cost_cents==null ? null : dollars.format(live.total_cost_cents/100);
-  return `<div class="summary panel"><span class="eyebrow">Your day, coming together</span><h2>On your plate</h2><p>${Object.keys(selections).length} of ${profile.snacks ? 4 : 3} meals selected · ${sessionUser?'Saved to account':'Saved in this browser'}</p><div class="summary-progress"><span style="width:${Object.keys(selections).length/(profile.snacks?4:3)*100}%"></span></div>${meals.slice(0,profile.snacks?4:3).map(meal=>{
+  return `<div class="summary panel ${showPlanCta?'':'summary-on-plan'}"><span class="eyebrow">Your day, coming together</span><h2>On your plate</h2><p>${Object.keys(selections).length} of ${profile.snacks ? 4 : 3} meals selected · ${sessionUser?'Saved to account':'Saved in this browser'}</p><div class="summary-progress"><span style="width:${Object.keys(selections).length/(profile.snacks?4:3)*100}%"></span></div>${meals.slice(0,profile.snacks?4:3).map(meal=>{
     const item=selections[meal];
     const dir=item?directionsControl(item,{compact:true}):'';
     return `<div class="summary-line"><div class="summary-meal"><span>${meal}</span><strong>${escapeHtml(item?.name || 'Not picked yet')}</strong></div>${item?`<div class="summary-actions">${dir}</div>`:''}</div>`;
-  }).join('')}<div class="summary-total"><span>${nearby ? 'Cash remaining (tax/fees excluded)' : 'Swipes remaining'}</span><strong>${remaining}</strong></div>${nearby&&cash?`<p class="small">Cash subtotal (menu prices): ${cash}</p>`:''}${!nearby&&live?`<p class="small">Swipes used: ${live.swipes_used ?? 0}</p>`:''}<p class="small summary-note">${summaryNutritionNote(live)}</p>${undoSnapshot?`<button class="secondary" data-action="undo-swap">Undo last swap</button>`:''}<button class="primary" data-action="plan">View my plan</button></div>`;
+  }).join('')}<div class="summary-total"><span>${nearby ? 'Cash remaining (tax/fees excluded)' : 'Swipes remaining'}</span><strong>${remaining}</strong></div>${nearby&&cash?`<p class="small">Cash subtotal (menu prices): ${cash}</p>`:''}${!nearby&&live?`<p class="small">Swipes used: ${live.swipes_used ?? 0}</p>`:''}<p class="small summary-note">${summaryNutritionNote(live)}</p>${undoSnapshot?`<button class="secondary" data-action="undo-swap">Undo last swap</button>`:''}${showPlanCta?'<button class="primary" data-action="plan">View my plan</button>':''}</div>`;
 }
-function plan() { return `<section class="stack"><div class="heading"><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">A day that fuels you.</h1><p class="lede">Your selected meals stay with you as you explore.</p></div>${DailyNutritionDashboard()}${summary()}${results(true)}</section>`; }
+function plan() {
+  return `<section class="stack plan-page">
+    <div class="heading"><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">A day that fuels you.</h1><p class="lede">Selected meals first, then nutrition tracking. Planned picks stay separate from what you have eaten.</p></div>
+    ${summary({ showPlanCta: false })}
+    <section class="plan-selected stack" aria-labelledby="plan-selected-heading"><h2 id="plan-selected-heading">Selected meals</h2>${results(true)}</section>
+    ${NutritionSummary()}
+    ${EatenTodaySection()}
+    ${NutritionTargetsForm({ collapsed: true })}
+  </section>`;
+}
+function profileView() {
+  const incomplete = !complete;
+  const cuisines = settings.nearby.cuisines?.length ? settings.nearby.cuisines.join(', ') : 'Any';
+  const measures = [profile.height && `${profile.height} cm`, profile.weight && `${profile.weight} kg`, profile.goalWeight && `goal ${profile.goalWeight} kg`, profile.activity, profile.age].filter(Boolean).join(' · ') || 'Not set';
+  const targets = nutritionState.data?.targets;
+  const targetLine = targets && ['calories','protein_g','carbs_g','fat_g'].some(k => typeof targets[k] === 'number')
+    ? `${targets.calories ?? '—'} kcal · P ${targets.protein_g ?? '—'} · C ${targets.carbs_g ?? '—'} · F ${targets.fat_g ?? '—'}`
+    : 'Not set yet';
+  return `<section class="stack profile-page">
+    <div class="heading"><span class="eyebrow">Profile</span><h1 tabindex="-1">Your preferences</h1><p class="lede">Review what Trojan Fork uses for recommendations. Edit anytime without restarting setup.</p></div>
+    ${incomplete ? `<div class="panel stack profile-incomplete"><p>Your profile is incomplete. Complete it for better meal matches, or keep browsing.</p><button type="button" class="primary" data-action="edit-preferences">Complete your profile</button></div>` : ''}
+    <div class="panel stack profile-summary">
+      <div class="profile-row"><span>Food goal</span><strong>${escapeHtml(profile.goal || '—')}</strong></div>
+      <div class="profile-row"><span>Diet</span><strong>${escapeHtml(profile.diet || '—')}</strong></div>
+      <div class="profile-row"><span>Allergies</span><strong>${escapeHtml(profile.allergies || 'None listed')}</strong></div>
+      <div class="profile-row"><span>Exclusions</span><strong>${escapeHtml(profile.exclusions || 'None listed')}</strong></div>
+      <div class="profile-row"><span>Cuisines (Off-Campus)</span><strong>${escapeHtml(cuisines)}</strong></div>
+      <div class="profile-row"><span>Meal swipes</span><strong>${escapeHtml(String(settings.campus.swipes ?? '—'))} / day</strong></div>
+      <div class="profile-row"><span>Budget</span><strong>${dollars.format(settings.nearby.perMeal)} / meal · ${dollars.format(settings.nearby.daily)} / day</strong></div>
+      <div class="profile-row"><span>Walking origin</span><strong>${escapeHtml(settings.nearby.origin || '—')} · ${settings.nearby.distance} mi</strong></div>
+      <div class="profile-row"><span>Body &amp; activity</span><strong>${escapeHtml(measures)}</strong></div>
+      <div class="profile-row"><span>Nutrition targets</span><strong>${escapeHtml(targetLine)}</strong></div>
+      <div class="profile-row"><span>Sign-in</span><strong>${sessionUser ? escapeHtml(sessionUser.display_name || sessionUser.email) + ' · syncing' : 'Local browser only'}</strong></div>
+    </div>
+    <div class="actions profile-actions">
+      <button type="button" class="primary" data-action="edit-preferences">${incomplete ? 'Complete your profile' : 'Edit preferences'}</button>
+      <button type="button" class="secondary" data-action="settings">Dining limits</button>
+      ${sessionUser ? '<button type="button" class="quiet" data-action="auth-signout">Sign out</button>' : '<button type="button" class="quiet" data-action="auth-open">Sign in</button>'}
+      ${complete ? '<button type="button" class="quiet" data-action="clear">Clear saved data</button>' : ''}
+    </div>
+  </section>`;
+}
 
 function context() {
   const current = settings[mode];
   return `<section class="context stack heading">
-    <div><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">Plan your day.</h1><p class="lede">${mode === 'campus' ? 'Set how many swipes you want to use today.' : 'Set your spending limits and walking origin. Distances use a straight-line radius.'}</p></div>
+    <div><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">Plan your day.</h1><p class="lede">${mode === 'campus' ? 'Set how many swipes you want to use today. USC Dining uses dining halls and swipes — not live GPS.' : 'Set budget and origin. Live location personalizes Off-Campus picks only inside the USC DPS patrol area.'}</p></div>
     <form class="panel stack" id="context">
       ${Object.keys(selections).length ? '<p>Applying new limits starts a fresh plan.</p>' : ''}
       ${mode === 'campus' ? numberField('swipes', 'Available meal swipes', current.swipes, 0, 20, 1, true) + `<div class="field"><label for="hall">Preferred dining hall</label><select id="hall" name="hall">${[['All halls','Any dining hall'],['evk',"Everybody’s Kitchen (EVK)"],['parkside','Parkside'],['university-village','USC Village']].map(([value,label])=>`<option value="${value}" ${current.hall===value?'selected':''}>${label}</option>`).join('')}</select></div>` : `
@@ -484,7 +592,7 @@ function context() {
         <div class="fields">${numberField('perMeal', 'Max per meal ($)', current.perMeal, 0, 999, .01, true)}
         ${numberField('daily', 'Daily budget ($)', current.daily, 0, 999, .01, true)}</div>
         ${numberField('distance', 'Search radius (mi)', current.distance, .05, 1, .01, true)}<label class="check"><input type="checkbox" name="includeUnknownPrices" ${current.includeUnknownPrices?'checked':''}>Include meals with unpublished prices</label><p class="small">These meals are labeled price unavailable. Their fit to your budget cannot be verified.</p>
-        <div class="field"><label for="origin">Walking origin</label><select name="origin" id="origin">${['USC Village','Tommy Trojan','Leavey Library',...(current.coordinates?.label==='Current location'?['Current location']:[])].map(x=>`<option ${current.origin===x?'selected':''}>${x}</option>`).join('')}</select><p class="small">${current.coordinates?'Location set.':'Choose a campus landmark or use your location.'}</p></div><button type="button" class="secondary" data-action="locate">Use my location</button>
+        <div class="field"><label for="origin">Walking origin</label><select name="origin" id="origin">${['USC Village','Tommy Trojan','Leavey Library',...(current.coordinates?.label==='Current location'?['Current location']:[])].map(x=>`<option ${current.origin===x?'selected':''}>${x}</option>`).join('')}</select><p class="small">${current.coordinates?.label==='Current location'?'Using your live location (DPS zone).':'Use live location inside the DPS zone, or pick a campus landmark.'}</p></div><button type="button" class="secondary" data-action="locate">Use my location</button>
         `}
       <p class="small">Only known menu dishes are estimated. Cards show ranges and assumed servings; tracker totals use midpoints. Estimates cannot verify allergens or guarantee budget fit.</p><div class="actions"><button class="secondary" type="button" data-action="home">Back</button><button class="primary" type="submit">See meal options →</button></div>
     </form>
@@ -498,18 +606,19 @@ function results(selectedOnly = false) {
   const current = settings[mode];
   if(loading) return '<div class="stack" role="status" aria-live="polite" aria-label="Loading meals"><div class="meal-loading"><span class="meal-spinner" aria-hidden="true"></span><div><strong>Finding meals for you</strong><p>Fetching live menus and personalizing your choices. This can take up to two minutes.</p></div></div><div class="skeleton" aria-hidden="true"></div><div class="skeleton" aria-hidden="true"></div><div class="skeleton" aria-hidden="true"></div></div>';
   if(!current.livePlan) return `<div class="empty"><h2>${requestError?'Meal service unavailable':!config.apiBaseUrl?'Waiting for the meal service':'Your plan starts here'}</h2><p>${escapeHtml(requestError || (!config.apiBaseUrl ? 'The backend connection has not been configured yet. Meals will appear here once the service is connected.' : 'Build a plan using the connected menu service.'))}</p>${config.apiBaseUrl?`<button class="primary" data-action="refresh">${requestError?'Retry':'Build my plan'}</button>`:''}</div>`;
-  return `<div class="stack recommendations"><div class="meal-heading"><h2>Your daily picks</h2><span>${escapeHtml(profile.goal)}</span></div>${mode==='nearby' && !settings.nearby.includeUnknownPrices && current.livePlan.diversity?.eligible_restaurants===1?`<div class="panel stack"><p>Only one restaurant has readable dishes with verified prices matching your filters. Other nearby menus may not publish prices.</p><button class="secondary" data-action="include-unpriced">Include restaurants with unpublished prices</button><p class="small">These meals will be marked “Price unavailable · budget unverified.”</p></div>`:''}${requestError?`<p role="alert" class="results-note">${escapeHtml(requestError)} <button class="quiet" data-action="refresh">Retry</button></p>`:''}<details class="results-note"><summary>Menu sources &amp; notes</summary><p>Updated ${escapeHtml(new Date(current.livePlan.generated_at).toLocaleString())}. ${escapeHtml(current.livePlan.warnings?.join(' ') || 'Review source information before choosing meals.')}</p></details>
+  return `<div class="stack recommendations"><div class="meal-heading"><h2>${selectedOnly?'Your selections':'Your daily picks'}</h2><span>${escapeHtml(profile.goal)}</span></div>${mode==='nearby' && !settings.nearby.includeUnknownPrices && current.livePlan.diversity?.eligible_restaurants===1?`<div class="panel stack"><p>Only one restaurant has readable dishes with verified prices matching your filters. Other nearby menus may not publish prices.</p><button class="secondary" data-action="include-unpriced">Include restaurants with unpublished prices</button><p class="small">These meals will be marked “Price unavailable · budget unverified.”</p></div>`:''}${requestError?`<p role="alert" class="results-note">${escapeHtml(requestError)} <button class="quiet" data-action="refresh">Retry</button></p>`:''}<details class="results-note"><summary>Menu sources &amp; notes</summary><p>Updated ${escapeHtml(new Date(current.livePlan.generated_at).toLocaleString())}. ${escapeHtml(current.livePlan.warnings?.join(' ') || 'Review source information before choosing meals.')}</p></details>
 
     ${meals.slice(0, profile.snacks ? 4 : 3).map(meal => {
       let options = getOptions(mode, meal, profile, current, selections);
       if (selectedOnly) options = selections[meal] ? [selections[meal]] : [];
       const cursor=Math.min(mealCursors[mode][meal] || 0,Math.max(0,options.length-1));
-      return `<section class="meal-section" aria-label="${meal}"><div class="meal-heading"><h3>${meal}${meal==='Snack' ? ' · optional' : ''}</h3><span>${options.length} ${options.length===1?'choice':'choices'}</span></div>${options.length ? `<div class="meal-carousel" data-carousel="${meal}" role="region" aria-roledescription="carousel" aria-label="${meal} recommendations" tabindex="0">${options.length>1?`<div class="meal-carousel-nav"><button class="secondary" data-action="meal-slide" data-meal="${meal}" data-step="-1" aria-label="Previous ${meal.toLowerCase()} option" ${cursor===0?'disabled':''}>←</button><span class="small" aria-live="polite">Option ${cursor+1} of ${options.length} <span aria-hidden="true">${options.map((_,i)=>i===cursor?'●':'○').join(' ')}</span></span><button class="secondary" data-action="meal-slide" data-meal="${meal}" data-step="1" aria-label="Next ${meal.toLowerCase()} option" ${cursor===options.length-1?'disabled':''}>→</button></div>`:''}<div class="meal-grid">${options.slice(cursor,cursor+1).map((item) => { const index=cursor;
+      const compare = !selectedOnly && options.length > 0;
+      return `<section class="meal-section" id="meal-${meal}" aria-label="${meal}"><div class="meal-heading"><h3>${meal}${meal==='Snack' ? ' · optional' : ''}</h3><span>${options.length} ${options.length===1?'choice':'choices'}</span></div>${options.length ? `<div class="meal-carousel ${compare?'meal-compare':''}" data-carousel="${meal}" data-count="${options.length}" role="region" aria-roledescription="${compare?'group':'carousel'}" aria-label="${meal} recommendations" tabindex="0">${!selectedOnly && options.length>1?`<div class="meal-carousel-nav"><button class="secondary" data-action="meal-slide" data-meal="${meal}" data-step="-1" aria-label="Previous ${meal.toLowerCase()} option" ${cursor===0?'disabled':''}>←</button><span class="small" aria-live="polite">Option ${cursor+1} of ${options.length} <span aria-hidden="true">${options.map((_,i)=>i===cursor?'●':'○').join(' ')}</span></span><button class="secondary" data-action="meal-slide" data-meal="${meal}" data-step="1" aria-label="Next ${meal.toLowerCase()} option" ${cursor===options.length-1?'disabled':''}>→</button></div>`:''}<div class="meal-grid meal-alternatives" data-count="${options.length}">${options.map((item, index) => {
         const selected = selections[meal]?.id === item.id;
         const locked = modeState[mode].locks[meal];
         const venueLink = directionsUrl(item) ? `<a class="venue-link" href="${escapeHtml(directionsUrl(item))}" target="_blank" rel="noopener">${escapeHtml(item.place)}</a>` : `<p class="venue">${escapeHtml(item.place)}</p>`;
         const nutritionLabel = item.raw.nutrition?.display_status || (item.raw.nutrition?.status==='unknown'?'Nutrition unavailable':`${item.raw.nutrition.status} nutrition`);
-        return `<article class="panel meal-card ${selected?'selected':''}"><div class="card-top"><span class="badge">${selected?'✓ Selected':index===0?'First pick':'Alternative'}</span><span class="small">${item.raw.source.status==='verified'?'Source checked':item.raw.source.status==='stale'?'Saved menu':item.raw.source.kind==='curated_snapshot'?'Saved menu':'Live menu'}${item.raw.source.verified_at||item.raw.source.menu_date?` · checked ${escapeHtml(item.raw.source.menu_date || new Date(item.raw.source.verified_at).toLocaleDateString())}`:''}</span></div>${safeUrl(item.raw.image_url)?`<img class="meal-photo" src="${escapeHtml(safeUrl(item.raw.image_url))}" alt="${escapeHtml(item.raw.venue.name)} (venue photo)" loading="lazy" onerror="this.hidden=true">`:""}<div class="meal-card-header"><img class="food-art" src="${foodArt(item.name)}" alt="" aria-hidden="true"><div><h3>${escapeHtml(item.name)}</h3>${venueLink}</div></div><div class="tags"><span>${escapeHtml(item.diet==='Any diet'?'Omnivore':item.diet)}</span>${item.cuisine?`<span>${escapeHtml(item.cuisine)}${item.raw.cuisine_status==='inferred'?' · AI guess':''}</span>`:''}<span>${mode==='nearby' ? item.raw.price_status==='estimated' && item.raw.price_range_cents ? 'AI-estimated '+dollars.format(item.raw.price_range_cents.low/100)+'–'+dollars.format(item.raw.price_range_cents.high/100)+' · budget uncertain':item.cost===null?'Price unavailable · budget unverified':dollars.format(item.cost)+' · tax/fees excluded' : 'Dining hall entry'}</span></div><p class="small">${mode==='nearby' ? item.distance===null?'Distance unavailable · ':Number(item.distance).toFixed(2)+' mi straight-line · ' : ''}${escapeHtml(nutritionLabel)} · allergens ${escapeHtml(item.raw.allergen_information_status)}</p>${mealNutrition(item.raw, meal.toLowerCase(), current.livePlan.date, true)}<div class="card-actions"><button class="${selected?'primary':'secondary'}" data-action="pick" data-meal="${meal}" data-id="${escapeHtml(item.id)}" aria-pressed="${selected}" ${locked?'disabled':''}>${selected?'Selected ✓':selections[meal]?'Swap to this':'Select meal'}</button><button class="quiet" data-action="details" data-meal="${meal}" data-id="${escapeHtml(item.id)}">Nutrition & details</button>${directionsControl(item)}</div>${selected ? `<button class="quiet lock" data-action="lock" data-meal="${meal}" aria-pressed="${Boolean(locked)}">${locked?'Unlock meal':'Lock meal'}</button>`:''}</article>`;
+        return `<article class="panel meal-card ${selected?'selected':''} ${index===cursor?'is-active':''}" data-option-index="${index}"><div class="card-top"><span class="badge">${selected?'✓ Selected':index===0?'First pick':'Alternative'}</span><span class="small">${item.raw.source.status==='verified'?'Source checked':item.raw.source.status==='stale'?'Saved menu':item.raw.source.kind==='curated_snapshot'?'Saved menu':'Live menu'}${item.raw.source.verified_at||item.raw.source.menu_date?` · checked ${escapeHtml(item.raw.source.menu_date || new Date(item.raw.source.verified_at).toLocaleDateString())}`:''}</span></div>${safeUrl(item.raw.image_url)?`<img class="meal-photo" src="${escapeHtml(safeUrl(item.raw.image_url))}" alt="${escapeHtml(item.raw.venue.name)} (venue photo)" loading="lazy" onerror="this.hidden=true">`:""}<div class="meal-card-header"><img class="food-art" src="${foodArt(item.name)}" alt="" aria-hidden="true"><div><h3>${escapeHtml(item.name)}</h3>${venueLink}</div></div><div class="tags"><span>${escapeHtml(item.diet==='Any diet'?'Omnivore':item.diet)}</span>${item.cuisine?`<span>${escapeHtml(item.cuisine)}${item.raw.cuisine_status==='inferred'?' · AI guess':''}</span>`:''}<span>${mode==='nearby' ? item.raw.price_status==='estimated' && item.raw.price_range_cents ? 'AI-estimated '+dollars.format(item.raw.price_range_cents.low/100)+'–'+dollars.format(item.raw.price_range_cents.high/100)+' · budget uncertain':item.cost===null?'Price unavailable · budget unverified':dollars.format(item.cost)+' · tax/fees excluded' : 'Dining hall entry'}</span></div><p class="small">${mode==='nearby' ? item.distance===null?'Distance unavailable · ':Number(item.distance).toFixed(2)+' mi straight-line · ' : ''}${escapeHtml(nutritionLabel)} · allergens ${escapeHtml(item.raw.allergen_information_status)}</p>${mealNutrition(item.raw, meal.toLowerCase(), current.livePlan.date, true)}<div class="card-actions"><button class="${selected?'primary':'secondary'}" data-action="pick" data-meal="${meal}" data-id="${escapeHtml(item.id)}" aria-pressed="${selected}" ${locked?'disabled':''}>${selected?'Selected ✓':selections[meal]?'Swap to this':'Select meal'}</button><button class="quiet" data-action="details" data-meal="${meal}" data-id="${escapeHtml(item.id)}">Nutrition & details</button>${directionsControl(item)}</div>${selected ? `<button class="quiet lock" data-action="lock" data-meal="${meal}" aria-pressed="${Boolean(locked)}">${locked?'Unlock meal':'Lock meal'}</button>`:''}</article>`;
       }).join('')}</div></div>`:emptySlot(meal, selectedOnly)}</section>`;
     }).join('')}${swapPreviewSheet()}</div>`;
 }
@@ -536,15 +645,20 @@ function details(meal, id) {
   dialog.showModal();
 }
 
-function render(focus = true) {
-  app.innerHTML = { auth: authView, onboarding, home, context, results, plan }[view]();
-  profileLink.hidden = view === 'onboarding' || view === 'auth';
-  profileLink.textContent = sessionUser ? (sessionUser.display_name || sessionUser.email || 'Your profile') : 'Your profile';
-  document.querySelectorAll('.bottom-nav button').forEach(b=>{
-    const current = b.dataset.action === view || (b.dataset.action === 'edit' && view === 'onboarding');
-    if (current) b.setAttribute('aria-current', 'page');
+function syncNavState() {
+  const active = NAV_ACTIONS[view] || 'home';
+  document.querySelectorAll('.header-nav button, .bottom-nav button').forEach(b => {
+    if (b.dataset.action === active) b.setAttribute('aria-current', 'page');
     else b.removeAttribute('aria-current');
   });
+  const showChrome = !['auth', 'onboarding'].includes(view);
+  document.querySelector('.bottom-nav')?.classList.toggle('is-hidden', !showChrome);
+  document.querySelector('.header-nav')?.classList.toggle('is-hidden', !showChrome);
+  syncHeaderAccount();
+}
+function render(focus = true) {
+  app.innerHTML = { auth: authView, onboarding, home, context, results, plan, profile: profileView }[view]();
+  syncNavState();
   if (focus) {
     const heading = app.querySelector(view === 'onboarding' || view === 'auth' ? '.form-title h2' : 'h1');
     heading?.focus({ preventScroll: true });
@@ -579,8 +693,45 @@ app.addEventListener('submit', event => {
   }
   if (event.target.id==='nutrition-targets') {
     const data=new FormData(event.target);
-    const targets=Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,data.get(key)===''?null:Number(data.get(key))]));
-    import('./nutrition-local.js').then(local=>{nutritionState.data=local.setTargets(nutritionState.date,targets,{source:'manual'});render(false);announce('Daily targets saved for this browser session.');}); return;
+    const targets={};
+    const errors=[];
+    for (const key of ['calories','protein_g','carbs_g','fat_g']) {
+      const raw = String(data.get(key) ?? '').trim();
+      if (raw === '') { targets[key] = null; continue; }
+      const value = Number(raw);
+      const max = key === 'calories' ? 20000 : 2000;
+      if (!Number.isFinite(value) || value < 0 || value > max) {
+        errors.push(key === 'calories' ? 'Calories must be 0–20000 kcal.' : `${key} must be 0–${max} g.`);
+      } else {
+        targets[key] = value;
+      }
+    }
+    if (errors.length) {
+      nutritionState.targetsStatus = 'error';
+      announce(errors[0]);
+      render(false);
+      return;
+    }
+    if (!hasAnyTarget(targets)) {
+      nutritionState.targetsStatus = 'error';
+      announce('Enter at least one target (calories or a macro), or estimate from your profile.');
+      render(false);
+      return;
+    }
+    nutritionState.targetsStatus = 'saving';
+    render(false);
+    import('./nutrition-local.js').then(local => {
+      nutritionState.data = local.setTargets(nutritionState.date, targets, { source: 'manual', remember: true });
+      nutritionState.targetsStatus = 'saved';
+      render(false);
+      announce('Daily targets saved.');
+      setTimeout(() => { if (nutritionState.targetsStatus === 'saved') { nutritionState.targetsStatus = ''; render(false); } }, 2000);
+    }).catch(() => {
+      nutritionState.targetsStatus = 'error';
+      render(false);
+      announce('Could not save targets.');
+    });
+    return;
   }
   if (event.target.id === 'onboarding') {
     readDraft();
@@ -608,13 +759,15 @@ app.addEventListener('submit', event => {
       complete = true;
       view = 'home';
       // Estimate and store daily calorie targets from height/weight/goal before rendering meals.
-      syncTargetsFromProfile(profile, { force: true }).then(estimated => {
-        if (estimated?.confidence === 'estimated') {
-          announce(`Daily target set to about ${estimated.targets.calories_kcal} kcal from your profile.`);
+      syncTargetsFromProfile(profile, { force: true, explicit: true }).then(result => {
+        if (result?.ok && result.estimated?.targets?.calories_kcal) {
+          announce(`Daily target set to about ${result.estimated.targets.calories_kcal} kcal from your profile (estimate).`);
+        } else if (result?.reason === 'missing_body_stats') {
+          announce(result.message);
         } else if (profile.height && profile.weight) {
           announce('Could not estimate calorie targets right now. You can enter them under My Plan.');
         } else {
-          announce('Add height and weight in your profile to estimate daily calorie targets.');
+          announce('Add height and weight in your profile to estimate daily calorie targets, or set them manually in My Plan.');
         }
         syncNutrition();
       });
@@ -653,6 +806,25 @@ document.addEventListener('click', event => {
       (next || region)?.focus({preventScroll:true}); return;
     }
     case 'nutrition-retry': syncNutrition(); return;
+    case 'open-targets':
+      view = 'plan';
+      render(false);
+      document.querySelector('#nutrition-targets-panel')?.setAttribute('open', '');
+      document.querySelector('#nutrition-targets input[name=calories]')?.focus({ preventScroll: true });
+      document.querySelector('#nutrition-targets-panel')?.scrollIntoView({ block: 'nearest' });
+      return;
+    case 'estimate-targets':
+      syncTargetsFromProfile(profile, { force: true, explicit: true }).then(result => {
+        render(false);
+        if (result?.ok && result.estimated?.targets?.calories_kcal) {
+          announce(`Estimated target about ${result.estimated.targets.calories_kcal} kcal. Review and save if you want to keep it as manual.`);
+        } else {
+          announce(result?.message || 'Could not estimate targets. Add height and weight in Profile, or enter targets manually.');
+          if (view !== 'plan') { view = 'plan'; render(false); }
+          document.querySelector('#nutrition-targets-panel')?.setAttribute('open', '');
+        }
+      });
+      return;
     case 'log': {
       const item = settings[mode].livePlan?.slots.find(x => x.slot === meal)?.recommendations.find(x => x.id === id);
       if (!item || settings[mode].livePlan.date !== nutritionState.date) return;
@@ -671,7 +843,11 @@ document.addEventListener('click', event => {
     case 'home':
       view = 'home';
       break;
+    case 'profile':
+      view = 'profile';
+      break;
     case 'edit':
+    case 'edit-preferences':
       draft = { ...profile };
       step = 0;
       view = 'onboarding';
@@ -703,7 +879,12 @@ document.addEventListener('click', event => {
     case 'auth-skip':
       view = complete ? 'home' : 'onboarding'; break;
     case 'auth-signout':
-      apiClient.logout().finally(()=>{ sessionUser=null; view='auth'; render(); announce('Signed out.'); }); return;
+      apiClient.logout().finally(()=>{
+        sessionUser=null;
+        if (view==='auth') view = complete ? 'home' : 'onboarding';
+        render();
+        announce('Browsing as guest.');
+      }); return;
     case 'undo-swap':
       undoSwap(); return;
     case 'swap-cancel':
@@ -721,8 +902,33 @@ document.addEventListener('click', event => {
       else { view='auth'; render(); announce('Saved profile and meal selections cleared.'); }
       return;
     case 'locate':
+      // Live GPS personalizes Off-Campus only, and only inside the USC DPS patrol zone.
+      if (mode !== 'nearby') { announce('Live location applies on Off-Campus. USC Dining uses dining halls instead.'); return; }
       if(!navigator.geolocation) { announce('Location unavailable. Choose a campus landmark.'); return; }
-      navigator.geolocation.getCurrentPosition(position=>{settings.nearby.coordinates={lat:position.coords.latitude,lng:position.coords.longitude,label:'Current location'}; settings.nearby.origin='Current location'; const select=document.querySelector('#origin'); if(select) { if(![...select.options].some(x=>x.value==='Current location')) select.add(new Option('Current location','Current location')); select.value='Current location'; } announce('Current location set. Apply limits to update meals.');},()=>announce('Location was not available. Choose a campus landmark instead.'),{timeout:10000}); return;
+      announce('Checking whether you are inside the USC DPS area…');
+      navigator.geolocation.getCurrentPosition(async position => {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        try {
+          const zone = await apiClient.locationZone({ lat, lng });
+          if (!zone?.allowed_for_live_location) {
+            announce(zone?.note || 'Outside the USC DPS area. Choose a campus landmark for Off-Campus.');
+            return;
+          }
+          settings.nearby.coordinates = { lat, lng, label: 'Current location', zone: zone.location_zone, dps: zone.dps_membership };
+          settings.nearby.origin = 'Current location';
+          const select = document.querySelector('#origin');
+          if (select) {
+            if (![...select.options].some(x => x.value === 'Current location')) select.add(new Option('Current location', 'Current location'));
+            select.value = 'Current location';
+          }
+          announce('Live location set inside the DPS zone. Apply limits to update Off-Campus meals.');
+          render(false);
+        } catch {
+          announce('Could not verify DPS zone. Choose a campus landmark instead.');
+        }
+      }, () => announce('Location was not available. Choose a campus landmark instead.'), { timeout: 10000, enableHighAccuracy: true, maximumAge: 30000 });
+      return;
     case 'plan': view = 'plan'; break;
     case 'refresh': refreshPlan(); return;
     case 'details': lastFocus=button; details(meal,id); return;
@@ -764,13 +970,17 @@ async function syncNutrition() {
   if(config.browserNutrition) {
     const local=await import('./nutrition-local.js');
     for(const key of ['campus','nearby']) local.updatePlan(settings[key].livePlan || {date:localDate(),mode:key==='campus'?'usc_dining':'off_campus',slots:[]});
-    // Fill missing targets from onboarding body stats (does not override manual edits).
+    // Precedence: keep manual; otherwise estimate when body stats exist; else leave unset.
     const current = local.daily(nutritionState.date);
-    if (!nutrientsHaveValues(current.targets) || current.targets_source === 'profile_estimate') {
-      await syncTargetsFromProfile(profile);
+    if (!hasAnyTarget(current.targets)) {
+      await syncTargetsFromProfile(profile, { force: false });
+    } else if (current.targets_source === 'profile_estimate') {
+      // Refresh estimate only when still labeled as estimate (never overwrite manual).
+      await syncTargetsFromProfile(profile, { force: false });
     }
   }
-  const pending = loadNutrition(); render(false); await pending; render(false);
+  await loadNutrition();
+  render(false);
 }
 app.addEventListener('change', event => {
   if (event.target.id !== 'nutrition-date' || nutritionState.busy || !/^\d{4}-\d{2}-\d{2}$/.test(event.target.value)) return;
