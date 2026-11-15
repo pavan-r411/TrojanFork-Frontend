@@ -8,7 +8,7 @@ export function daily(date) {
   if (!days.has(date)) {
     let saved;
     try { saved = validateDaily(JSON.parse(sessionStorage.getItem(key(date))), date); } catch {}
-    days.set(date, saved || { date, targets: empty(), planned: {calories:0,protein_g:0,carbs_g:0,fat_g:0}, consumed:{calories:0,protein_g:0,carbs_g:0,fat_g:0}, planned_spending_cents:0, actual_spending_cents:0, logs:[] });
+    days.set(date, saved || { date, targets: empty(), targets_source: null, planned: {calories:0,protein_g:0,carbs_g:0,fat_g:0}, consumed:{calories:0,protein_g:0,carbs_g:0,fat_g:0}, planned_spending_cents:0, actual_spending_cents:0, logs:[] });
   }
   return structuredClone(days.get(date));
 }
@@ -41,7 +41,13 @@ export function log(body,item) {
   return save(data);
 }
 export function remove(date,id) { const data=daily(date);data.logs=data.logs.filter(log=>log.id!==id);return save(data); }
-export function setTargets(date,targets) { const data=daily(date);data.targets=targets;return save(data); }
+export function setTargets(date, targets, options = {}) {
+  const data = daily(date);
+  data.targets = targets;
+  data.targets_source = options.source || data.targets_source || 'manual';
+  if (options.meta) data.targets_meta = options.meta;
+  return save(data);
+}
 export function clear() {
   for (let i=sessionStorage.length-1;i>=0;i--) { const name=sessionStorage.key(i); if(name.startsWith('trojanplate-live-nutrition-v1:'))sessionStorage.removeItem(name); }
   days.clear();plans.clear();

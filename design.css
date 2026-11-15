@@ -18,8 +18,9 @@ p { line-height:1.55; } a { color:var(--wine); }
 .masthead { border:0; }
 .header-inner { min-height:64px; gap:12px; }
 .wordmark { color:var(--gold); font-size:20px; font-weight:600; letter-spacing:-.04em; gap:10px; }
-.mark { width:30px; border:0; border-radius:9px; background:#900; }
-.mark::after { width:19px; border:2px solid var(--gold); background:none; }
+.mark { width:30px; height:30px; border:0; border-radius:9px; background:transparent; overflow:hidden; }
+.mark::after { content:none; }
+.mark img { width:100%; height:100%; object-fit:cover; display:block; }
 .tagline,.day-stamp { display:none; }
 #profile-link { font-size:12px; color:var(--subtle); padding:8px; }
 .eyebrow { text-transform:none; letter-spacing:0; font-size:12px; font-weight:500; color:var(--subtle); }
@@ -153,7 +154,7 @@ dialog { color:#fff; background:var(--surface); border:1px solid var(--line); bo
 h1[tabindex="-1"]:focus,h2[tabindex="-1"]:focus { outline:none; }
 
 /* Warm consumer-app theme from the latest user reference screens. */
-.wordmark { color:var(--wine); }.mark { background:var(--wine); }.mark::after { border-color:#f3d79c; }
+.wordmark { color:var(--wine); }.mark { background:transparent; }
 .skip { color:#fff; }
 .header-inner { min-height:64px; }.home-heading { margin-bottom:10px; }.home-heading h1 { font-size:30px; line-height:1.1; max-width:280px; margin-top:4px; }
 .panel { border-color:#ebe5df; box-shadow:0 8px 26px rgba(69,39,29,.035); }

@@ -83,6 +83,8 @@ export const apiClient = {
   me: () => request('/v1/auth/me'),
   getProfile: () => request('/v1/profile'),
   saveProfile: profile => request('/v1/profile', profile, 'PUT'),
+  /** Estimate daily calorie/macro targets from onboarding body stats. */
+  estimateTargets: body => request('/v1/profile/targets', body),
   getPlan: (date, mode) => request(`/v1/plans?date=${encodeURIComponent(date)}&mode=${encodeURIComponent(mode)}`),
   savePlan: body => request('/v1/plans', body, 'PUT'),
   swapPreview: body => request('/v1/plans/swap-preview', body),

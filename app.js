@@ -82,8 +82,64 @@ function announce(message) {
 }
 const localDate = () => new Date().toLocaleDateString('en-CA');
 const modeName = () => mode === 'campus' ? 'usc_dining' : 'off_campus';
+const goalApiValue = goal => ({
+  'Eat balanced meals': 'balanced',
+  'Build muscle': 'build_muscle',
+  'Fuel training': 'training_support',
+  'Maintain weight': 'maintenance',
+  'Gradually lose weight': 'gradual_weight_loss',
+  'Gradually gain weight': 'gradual_weight_gain',
+})[goal] || 'balanced';
 function profilePayload() {
-  return { goal: ({'Eat balanced meals':'balanced','Build muscle':'build muscle','Fuel training':'training_support','Maintain weight':'maintenance','Gradually lose weight':'gradual weight loss','Gradually gain weight':'gradual weight gain'})[profile.goal] || 'balanced', dietary_preferences: profile.diet==='Any diet'?[]:[profile.diet.toLowerCase()], allergies: profile.allergies.split(/[,\n]/).map(x=>x.trim()).filter(Boolean), disliked_ingredients:profile.exclusions.split(',').map(x=>x.trim()).filter(Boolean), preferred_cuisines:settings[mode].cuisines, activity_level:profile.activity?.toLowerCase() || 'moderate', snacks:profile.snacks, targets:nutritionState.data?.targets, remaining:nutritionState.data ? Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,nutritionState.data.targets[key]===null || nutritionState.data.consumed[key]===null?null:Math.max(0,nutritionState.data.targets[key]-nutritionState.data.consumed[key])])) : null };
+  return { goal: goalApiValue(profile.goal).replaceAll('_', ' '), dietary_preferences: profile.diet==='Any diet'?[]:[profile.diet.toLowerCase()], allergies: profile.allergies.split(/[,\n]/).map(x=>x.trim()).filter(Boolean), disliked_ingredients:profile.exclusions.split(',').map(x=>x.trim()).filter(Boolean), preferred_cuisines:settings[mode].cuisines, activity_level:profile.activity?.toLowerCase() || 'moderate', snacks:profile.snacks, height_cm: profile.height ? Number(profile.height) : null, weight_kg: profile.weight ? Number(profile.weight) : null, goal_weight_kg: profile.goalWeight ? Number(profile.goalWeight) : null, age_range: profile.age || null, targets:nutritionState.data?.targets, remaining:nutritionState.data ? Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,nutritionState.data.targets[key]===null || nutritionState.data.consumed[key]===null?null:Math.max(0,nutritionState.data.targets[key]-nutritionState.data.consumed[key])])) : null };
+}
+/** Body for POST /v1/profile/targets from onboarding fields. */
+function targetsPayload(source = profile) {
+  const height = source.height === '' || source.height == null ? null : Number(source.height);
+  const weight = source.weight === '' || source.weight == null ? null : Number(source.weight);
+  const goalWeight = source.goalWeight === '' || source.goalWeight == null ? null : Number(source.goalWeight);
+  return {
+    nutrition_goal: goalApiValue(source.goal),
+    activity_level: (source.activity || 'moderate').toLowerCase().replaceAll(' ', '_'),
+    age_range: source.age || null,
+    height_cm: Number.isFinite(height) ? height : null,
+    weight_kg: Number.isFinite(weight) ? weight : null,
+    goal_weight_kg: Number.isFinite(goalWeight) ? goalWeight : null,
+    prefer_high_protein: ['Build muscle', 'Fuel training'].includes(source.goal),
+  };
+}
+/** Estimate calorie/macro targets from collected profile and store them for the day. */
+async function syncTargetsFromProfile(source = profile, {force = false} = {}) {
+  if (!config.apiBaseUrl && !config.nutritionDemo) return null;
+  const payload = targetsPayload(source);
+  if (payload.height_cm == null || payload.weight_kg == null) return null;
+  try {
+    const estimated = await apiClient.estimateTargets(payload);
+    if (estimated?.confidence !== 'estimated' || !estimated.targets) return estimated;
+    const mapped = {
+      calories: estimated.targets.calories_kcal ?? null,
+      protein_g: estimated.targets.protein_g ?? null,
+      carbs_g: estimated.targets.carbohydrates_g ?? null,
+      fat_g: estimated.targets.fat_g ?? null,
+    };
+    if (config.browserNutrition) {
+      const local = await import('./nutrition-local.js');
+      const current = local.daily(nutritionState.date);
+      const hasManual = !force && nutrientsHaveValues(current.targets) && current.targets_source === 'manual';
+      if (!hasManual) {
+        nutritionState.data = local.setTargets(nutritionState.date, mapped, { source: 'profile_estimate', meta: estimated });
+      }
+    } else if (config.nutritionDemo) {
+      const mock = await import('./nutrition-mock.js');
+      nutritionState.data = mock.setTargets?.(nutritionState.date, mapped) || nutritionState.data;
+    }
+    return estimated;
+  } catch {
+    return null;
+  }
+}
+function nutrientsHaveValues(targets) {
+  return Boolean(targets && ['calories', 'protein_g', 'carbs_g', 'fat_g'].some(key => typeof targets[key] === 'number'));
 }
 function adoptPlan(plan, key) {
   if (plan.mode !== (key==='campus'?'usc_dining':'off_campus') || plan.date !== localDate()) throw new Error('The server returned a plan for a different mode or date.');
@@ -394,7 +450,7 @@ function foodArt(name) {
 }
 function safeUrl(value) { try { const url=new URL(value); return ['https:','http:'].includes(url.protocol)?url.href:''; } catch { return ''; } }
 function home() {
-  return `<section class="home-heading" data-enter><div><span class="eyebrow">${new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'})}</span><h1 tabindex="-1">Eat well.<br>Fight on.</h1><p class="lede">Trojan diet delights</p></div><span class="day-stamp">Made for your campus.</span></section>
+  return `<section class="home-heading" data-enter><div><span class="eyebrow">${new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'})}</span><h1 tabindex="-1">Eat well.<br>Fight On!</h1><p class="lede">Trojan diet delights</p></div><span class="day-stamp">Made for your campus.</span></section>
     ${sessionUser?`<p class="small">Signed in as ${escapeHtml(sessionUser.display_name || sessionUser.email)}. Plans sync to your account.</p>`:`<p class="small">Browsing locally. <button type="button" class="quiet" data-action="auth-open">Sign in</button> to sync profile and plans across devices.</p>`}
     ${NutritionSummary(true)}
     <div class="tabs" role="tablist" aria-label="Dining mode">${['campus','nearby'].map(key => `<button role="tab" id="tab-${key}" aria-controls="mode-panel" aria-selected="${mode===key}" tabindex="${mode===key ? 0 : -1}" data-action="mode" data-mode="${key}">${key==='campus' ? 'USC Dining' : 'Off-Campus'}</button>`).join('')}</div>
@@ -521,7 +577,7 @@ app.addEventListener('submit', event => {
   if (event.target.id==='nutrition-targets') {
     const data=new FormData(event.target);
     const targets=Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,data.get(key)===''?null:Number(data.get(key))]));
-    import('./nutrition-local.js').then(local=>{nutritionState.data=local.setTargets(nutritionState.date,targets);render(false);announce('Daily targets saved for this browser session.');}); return;
+    import('./nutrition-local.js').then(local=>{nutritionState.data=local.setTargets(nutritionState.date,targets,{source:'manual'});render(false);announce('Daily targets saved for this browser session.');}); return;
   }
   if (event.target.id === 'onboarding') {
     readDraft();
@@ -548,6 +604,17 @@ app.addEventListener('submit', event => {
       persist();
       complete = true;
       view = 'home';
+      // Estimate and store daily calorie targets from height/weight/goal before rendering meals.
+      syncTargetsFromProfile(profile, { force: true }).then(estimated => {
+        if (estimated?.confidence === 'estimated') {
+          announce(`Daily target set to about ${estimated.targets.calories_kcal} kcal from your profile.`);
+        } else if (profile.height && profile.weight) {
+          announce('Could not estimate calorie targets right now. You can enter them under My Plan.');
+        } else {
+          announce('Add height and weight in your profile to estimate daily calorie targets.');
+        }
+        syncNutrition();
+      });
     }
   } else {
     const data = new FormData(event.target);
@@ -687,6 +754,11 @@ async function syncNutrition() {
   if(config.browserNutrition) {
     const local=await import('./nutrition-local.js');
     for(const key of ['campus','nearby']) local.updatePlan(settings[key].livePlan || {date:localDate(),mode:key==='campus'?'usc_dining':'off_campus',slots:[]});
+    // Fill missing targets from onboarding body stats (does not override manual edits).
+    const current = local.daily(nutritionState.date);
+    if (!nutrientsHaveValues(current.targets) || current.targets_source === 'profile_estimate') {
+      await syncTargetsFromProfile(profile);
+    }
   }
   const pending = loadNutrition(); render(false); await pending; render(false);
 }
