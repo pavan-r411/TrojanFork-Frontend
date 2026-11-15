@@ -520,7 +520,7 @@ function details(meal, id) {
   dialog.innerHTML='<div class="sheet stack"></div>';
   const sheet=dialog.querySelector('.sheet');
   const title=document.createElement('h2'); title.textContent=item.name;
-  const close=document.createElement('button'); close.className='quiet'; close.dataset.action='close'; close.textContent='Close ×';
+  const close=document.createElement('button'); close.className='quiet meal-dialog-close'; close.dataset.action='close'; close.textContent='Close ×'; close.setAttribute('aria-label','Close meal details');
   const info=document.createElement('p');
   info.textContent=`${item.place}. ${item.description || ''} Source: ${sourceLabel(item.raw.source)}. Menu date: ${item.raw.source.menu_date ?? 'not dated'}.${item.raw.walking_minutes!=null?` About ${item.raw.walking_minutes} min walk (straight-line estimate).`:''} ${item.raw.nutrition?.display_status || 'Nutrition'}: calories ${item.raw.nutrition.calories ?? 'unavailable'}, protein ${item.raw.nutrition.protein_g ?? 'unavailable'} g. Allergens: ${item.raw.allergen_information_status}. ${item.raw.payment_label || ''}`;
   sheet.append(close,title);
@@ -745,6 +745,12 @@ render(false);
 document.addEventListener('keydown', event => { if (event.target.matches('[role=tab]') && ['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) { event.preventDefault(); const key=event.key==='Home'?'campus':event.key==='End'?'nearby':mode==='campus'?'nearby':'campus'; document.querySelector('#tab-'+key).click(); document.querySelector('#tab-'+key).focus(); } });
 
 document.querySelector('#details').addEventListener('close',()=>lastFocus?.isConnected && lastFocus.focus());
+document.querySelector('#details').addEventListener('click', event => {
+  const dialog=event.currentTarget;
+  if (event.target !== dialog) return;
+  const bounds=dialog.getBoundingClientRect();
+  if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
+});
 
 bootstrapSession().then(() => {
   render(false);

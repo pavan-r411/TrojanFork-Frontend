@@ -315,3 +315,10 @@ a.venue-link:hover, .directions-link:hover { text-decoration:underline; }
 #details .meal-detail-nutrition { gap:12px; }
 #details .meal-detail-nutrition > p { margin:0; }
 @media(min-width:768px) { .meal-carousel .meal-card { padding:20px; }.meal-card h3 { font-size:20px; } }
+
+#details .meal-dialog-close { align-self:flex-end; width:auto; color:#b32636; background:#f7e6e9; min-width:80px; min-height:44px; padding:8px 12px; border-radius:12px; }
+#details .meal-dialog-close:hover { color:#fff; background:#b32636; }
+
+/* All meal options share the burgundy frame; selection also uses tint and a checkmark. */
+.meal-carousel .meal-card { border-color:var(--wine); }
+.meal-carousel .meal-card.selected { background:#fff5f7; box-shadow:inset 0 0 0 1px var(--wine); }

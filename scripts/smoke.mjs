@@ -116,6 +116,11 @@ try {
   assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   await evaluate('document.querySelector(".bottom-nav [data-action=home]").click();document.querySelector("[data-action=details]").click()');
   assert.equal(await evaluate('document.querySelector("dialog").open'),true);
+  await evaluate('document.querySelector("#details h2").click()');
+  assert.equal(await evaluate('document.querySelector("#details").open'),true);
+  await evaluate('document.querySelector("#details").dispatchEvent(new MouseEvent("click",{bubbles:true,clientX:-1,clientY:-1}))');
+  assert.equal(await evaluate('document.querySelector("#details").open'),false);
+  await evaluate('document.querySelector("[data-action=details]").click()');
   assert.equal(await evaluate('document.querySelectorAll(".meal-card .meal-nutrients").length'),0);
   assert.equal(await evaluate('document.querySelectorAll("#details .meal-nutrients span").length'),4);
   assert.equal(await evaluate('Boolean(document.querySelector("#details [data-portion]"))'),true);
