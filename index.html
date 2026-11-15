@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" data-type="software">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="page-type" content="software">
+  <meta name="site-kind" content="software">
+  <meta name="theme-color" content="#fffaf3">
+  <meta name="description" content="Plan a day of meals on and around USC with TrojanPlate.">
+  <title>TrojanPlate — USC meal planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js?v=cuisine-control-2"></script>
+</head>
+<body>
+  <a class="skip" href="#app">Skip to content</a>
+  <header class="masthead"><div class="wrap header-inner">
+    <button class="wordmark" type="button" data-action="home" aria-label="TrojanPlate home"><span class="mark" aria-hidden="true"></span>TrojanPlate</button><span class="tagline">Eat smarter. Fight On.</span>
+    <button class="quiet" type="button" data-action="edit" id="profile-link" hidden>Your profile</button>
+  </div></header>
+  <main class="wrap" id="app"></main>
+  <nav class="bottom-nav" aria-label="Main navigation"><button data-action="home">Home</button><button data-action="plan">My Plan</button><button data-action="edit">Profile</button></nav><dialog id="details" aria-label="Meal details"></dialog><div id="toast" role="status" aria-live="polite"></div><footer class="wrap footer"><span>TrojanPlate</span><span>Student-built · Not affiliated with USC</span></footer>
+</body>
+</html>
