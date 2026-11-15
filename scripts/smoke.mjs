@@ -89,7 +89,9 @@ try {
   await evaluate('document.querySelector(".meal-carousel-nav button:first-child").click()');
   assert.equal(await evaluate('document.querySelector(".meal-card h3").textContent'),firstCard);
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector("[data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
-  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),0);
+  // First picks are seeded into the daily plan so "On your plate" updates immediately.
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
+  assert.equal(await evaluate('document.querySelector(".summary").textContent.includes("3 of 3 meals selected")'),true);
   await evaluate('document.querySelector("[data-action=log]").click();document.querySelector("[data-action=log]").click()');
   for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("500")'),true);
@@ -99,19 +101,19 @@ try {
   for(let i=0;i<80;i++){if(await evaluate('!document.querySelector(".nutrition-log")'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelectorAll(".nutrition-log").length'),0);
   await evaluate('document.querySelector(".bottom-nav [data-action=home]").click()');
-  await evaluate('document.querySelector("[data-action=pick]").click()');
   await ready();
-  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),1);
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   await evaluate('document.querySelector("[data-action=lock]").click();document.querySelector("[data-mode=nearby]").click()');
   await ready();
-  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),0);
-  await evaluate('document.querySelector("[data-action=pick]").click()');
-  await ready();
+  // Off-campus keeps a separate seeded plan from USC Dining.
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
+  assert.equal(await evaluate('document.querySelector(".summary").textContent.includes("3 of 3 meals selected")'),true);
   await evaluate('document.querySelector("[data-mode=campus]").click()');
-  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),1);
+  await ready();
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   assert.equal(await evaluate('document.querySelector(".meal-card.selected [data-action=pick]").disabled'),true);
   await evaluate('document.querySelector("[data-action=plan]").click()');
-  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),1);
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   await evaluate('document.querySelector(".bottom-nav [data-action=home]").click();document.querySelector("[data-action=details]").click()');
   assert.equal(await evaluate('document.querySelector("dialog").open'),true);
   await evaluate('document.querySelector("[data-action=close]").click()');
@@ -142,9 +144,9 @@ try {
   await send('Page.reload',{},sessionId);await ready();
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector("[data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(livePlanCalls,1);
-  await evaluate('document.querySelector("[data-action=pick]").click()');
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.selected"))'))break;await new Promise(r=>setTimeout(r,100));}
-  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),1);
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
+  assert.equal(await evaluate('document.querySelector(".summary").textContent.includes("3 of 3 meals selected")'),true);
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.selected [data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
   await evaluate('document.querySelector(".meal-card.selected [data-action=log]").click()');
   for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}

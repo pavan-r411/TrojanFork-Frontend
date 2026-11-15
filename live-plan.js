@@ -1,5 +1,15 @@
 import { known, total } from './nutrition.js';
 
+/** Seed each unlocked empty slot with its first recommendation so "On your plate" reflects the daily plan. */
+export function seedDefaultSelections(plan) {
+  for (const slot of plan.slots || []) {
+    if (slot.locked || slot.selected_recommendation_id) continue;
+    const first = slot.recommendations?.[0];
+    if (first) slot.selected_recommendation_id = first.id;
+  }
+  return plan;
+}
+
 export function recalculatePlan(plan, context = {}) {
   const selected=plan.slots.flatMap(slot=>slot.recommendations.filter(item=>item.id===slot.selected_recommendation_id));
   const cost=total(selected,'price_cents');

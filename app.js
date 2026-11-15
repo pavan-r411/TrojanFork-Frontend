@@ -115,7 +115,14 @@ async function refreshPlan() {
   loading=true; requestError=''; render(false);
   try {
     const current=settings[key];
-    const plan=config.nutritionDemo ? (await import('./nutrition-mock.js')).demoPlan(planMode, localDate()) : await apiClient.generate({mode:planMode, date:localDate(), previous_plan:current.livePlan, profile:profilePayload(), context:{meal_swipes_available:settings.campus.swipes,dining_hall:settings.campus.hall?.trim() || 'All halls',dining_dollars_cents:profile.diningDollars?Math.round(Number(profile.diningDollars)*100):null,origin:current.coordinates || {lat:34.0258,lng:-118.2854,label:current.origin || 'USC Village'},max_walk_m:Math.round((current.distance || .3)*1609.344),include_unknown_prices:Boolean(current.includeUnknownPrices),include_ai_estimates:true,per_meal_budget_cents:Math.round((current.perMeal ?? 15)*100),daily_budget_cents:Math.round((current.daily ?? 42)*100),preferred_cuisines:current.cuisines,locked_meal_ids:Object.entries(modeState[key].locks).filter(([,v])=>v).map(([meal])=>modeState[key].selections[meal]?.id)}});
+    const context={meal_swipes_available:settings.campus.swipes,dining_hall:settings.campus.hall?.trim() || 'All halls',dining_dollars_cents:profile.diningDollars?Math.round(Number(profile.diningDollars)*100):null,origin:current.coordinates || {lat:34.0258,lng:-118.2854,label:current.origin || 'USC Village'},max_walk_m:Math.round((current.distance || .3)*1609.344),include_unknown_prices:Boolean(current.includeUnknownPrices),include_ai_estimates:true,per_meal_budget_cents:Math.round((current.perMeal ?? 15)*100),daily_budget_cents:Math.round((current.daily ?? 42)*100),preferred_cuisines:current.cuisines,locked_meal_ids:Object.entries(modeState[key].locks).filter(([,v])=>v).map(([meal])=>modeState[key].selections[meal]?.id)};
+    let plan;
+    if (config.nutritionDemo) {
+      const {seedDefaultSelections,recalculatePlan}=await import('./live-plan.js');
+      plan=recalculatePlan(seedDefaultSelections((await import('./nutrition-mock.js')).demoPlan(planMode, localDate())), context);
+    } else {
+      plan=await apiClient.generate({mode:planMode, date:localDate(), previous_plan:current.livePlan, profile:profilePayload(), context});
+    }
     if (token !== planRequest) return;
     adoptPlan(plan,key);
     if(config.nutritionDemo) (await import('./nutrition-mock.js')).updatePlan(plan);
@@ -528,8 +535,8 @@ app.addEventListener('submit', event => {
   } else {
     const data = new FormData(event.target);
     settings[mode] = mode === 'campus'
-      ? { includeAIEstimates:true, swipes: Number(data.get('swipes')), cuisines: [], hall:String(data.get('hall') || '').trim() || 'All halls' }
-      : { includeAIEstimates:true, includeUnknownPrices:data.has('includeUnknownPrices'), perMeal: Number(data.get('perMeal')), daily: Number(data.get('daily')), distance: Number(data.get('distance')), cuisines: String(data.get('cuisines') || '').split(',').map(x=>x.trim()).filter(Boolean), origin: data.get('origin'), coordinates: data.get('origin')==='Current location' ? settings.nearby.coordinates : ({'USC Village':{lat:34.0258,lng:-118.2854,label:'USC Village'},'Tommy Trojan':{lat:34.0206,lng:-118.2854,label:'Tommy Trojan'},'Leavey Library':{lat:34.0217,lng:-118.2829,label:'Leavey Library'}})[data.get('origin')] };
+      ? { includeAIEstimates:true, swipes: Number(data.get('swipes')), cuisines: [], hall:String(data.get('hall') || '').trim() || 'All halls', livePlan: null }
+      : { includeAIEstimates:true, includeUnknownPrices:data.has('includeUnknownPrices'), perMeal: Number(data.get('perMeal')), daily: Number(data.get('daily')), distance: Number(data.get('distance')), cuisines: String(data.get('cuisines') || '').split(',').map(x=>x.trim()).filter(Boolean), origin: data.get('origin'), coordinates: data.get('origin')==='Current location' ? settings.nearby.coordinates : ({'USC Village':{lat:34.0258,lng:-118.2854,label:'USC Village'},'Tommy Trojan':{lat:34.0206,lng:-118.2854,label:'Tommy Trojan'},'Leavey Library':{lat:34.0217,lng:-118.2829,label:'Leavey Library'}})[data.get('origin')], livePlan: null };
     modeState[mode].selections = {};
     modeState[mode].locks = {};
     selections = modeState[mode].selections;
@@ -537,7 +544,8 @@ app.addEventListener('submit', event => {
     view = 'home';
   }
   render();
-  if((config.apiBaseUrl || config.nutritionDemo) && view==='home' && !settings[mode].livePlan) refreshPlan();
+  // Campus and off-campus keep separate plans; filter changes always rebuild the active mode.
+  if((config.apiBaseUrl || config.nutritionDemo) && view==='home') refreshPlan();
 });
 
 document.addEventListener('click', event => {
@@ -590,8 +598,10 @@ document.addEventListener('click', event => {
       mode = next;
       selections = modeState[mode].selections;
       view = 'home';
+      // Each tab owns its own plan (usc_dining vs off_campus). Build if missing so the summary updates.
       if ((config.apiBaseUrl || config.nutritionDemo) && !settings[mode].livePlan) { refreshPlan(); return; }
-      break;
+      render(false);
+      return;
     }
     case 'cuisines':
       view='context';render();document.querySelector('#cuisines')?.focus({preventScroll:true});return;

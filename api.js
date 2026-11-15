@@ -89,11 +89,15 @@ export const apiClient = {
   menus: date => request(`/api/usc/menus?date=${encodeURIComponent(date)}`),
   nearby: origin => request(`/api/restaurants/nearby?lat=${origin.lat}&lng=${origin.lng}&max_walk_m=${origin.max_walk_m ?? 483}`),
   generate: async body => {
-    if (!config.liveMode) return validatePlan(await request('/api/plans/generate',body));
+    if (!config.liveMode) {
+      const {seedDefaultSelections,recalculatePlan}=await import('./live-plan.js');
+      const plan=validatePlan(await request('/api/plans/generate',body));
+      return recalculatePlan(seedDefaultSelections(plan),body.context);
+    }
     const { previous_plan, ...payload }=body;
     const plan=validatePlan(await request('/v1/live/plan',payload));
-    const {preserveLocked,recalculatePlan}=await import('./live-plan.js');
-    return recalculatePlan(preserveLocked(plan,previous_plan,body.context.locked_meal_ids),body.context);
+    const {preserveLocked,recalculatePlan,seedDefaultSelections}=await import('./live-plan.js');
+    return recalculatePlan(seedDefaultSelections(preserveLocked(plan,previous_plan,body.context.locked_meal_ids)),body.context);
   },
   swap: async body => config.liveMode ? (await import('./live-plan.js')).selectInPlan(body) : validatePlan(await request('/api/plans/swap', body)),
 };
