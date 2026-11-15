@@ -278,3 +278,15 @@ a.venue-link:hover, .directions-link:hover { text-decoration:underline; }
   .nutrition-stats>div { flex-direction:row-reverse; align-items:center; padding:10px 14px; }
   .day-stamp { display:block; }
 }
+
+/* Native disclosure is keyboard-accessible and closed on a fresh page load. */
+.nutrition-dashboard > .nutrition-toggle { display:flex; justify-content:space-between; gap:16px; min-height:44px; color:#fff; font-size:15px; font-weight:500; list-style:none; padding:0; }
+.nutrition-toggle::-webkit-details-marker { display:none; }
+.nutrition-dashboard > .nutrition-toggle::before { display:none; }
+.nutrition-toggle-hint { display:flex; align-items:center; gap:12px; color:#e6cfd7; font-size:12px; }
+.nutrition-chevron { display:inline-block; font-size:22px; transition:transform .2s; }
+.nutrition-dashboard[open] .nutrition-chevron { transform:rotate(180deg); }
+.nutrition-dashboard .when-open,.nutrition-dashboard[open] .when-closed { display:none; }
+.nutrition-dashboard[open] .when-open { display:inline; }
+.nutrition-dashboard-body { padding-top:12px; }
+.nutrition-dashboard-body > .nutrition-line { justify-content:flex-end; }

@@ -144,6 +144,11 @@ try {
   await send('Page.reload',{},sessionId);await ready();
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector("[data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(livePlanCalls,1);
+  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),false);
+  await evaluate('document.querySelector(".nutrition-toggle").click()');
+  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),true);
+  await evaluate('document.querySelector(".nutrition-toggle").click()');
+  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),false);
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.selected"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   assert.equal(await evaluate('document.querySelector(".summary").textContent.includes("3 of 3 meals selected")'),true);
