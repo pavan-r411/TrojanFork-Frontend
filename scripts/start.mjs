@@ -6,6 +6,6 @@ const python=backend+'.venv/bin/python';
 if (!existsSync(python)) throw new Error('Set up TrojanFork-Backend/.venv first; see the backend README.');
 const port=process.env.PORT || '8000';
 console.log(`TrojanPlate: http://127.0.0.1:${port}/ui/ (live backend, no demo data)`);
-const child=spawn(python,['-m','uvicorn','trojanbites_extract.api.app:app','--host','127.0.0.1','--port',port],{cwd:backend,stdio:'inherit'});
+const child=spawn(python,['-m','uvicorn','trojanbites_extract.api.app:app','--host','127.0.0.1','--port',port,'--reload','--reload-dir','src'],{cwd:backend,stdio:'inherit'});
 for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));
 child.on('exit',code=>process.exit(code ?? 0));

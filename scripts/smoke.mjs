@@ -73,10 +73,15 @@ try {
   const ready=async()=>{for(let i=0;i<100;i++){if(await evaluate('Boolean(document.querySelector("#app [data-action=pick]"))'))return;await new Promise(r=>setTimeout(r,100));}throw new Error('Backend results did not render');};
   await ready();
   assert.equal(await evaluate('document.querySelectorAll("[role=tab]").length'),2);
+  assert.equal(await evaluate('document.querySelector("#tab-campus[aria-selected=true]") && !document.querySelector("[data-action=cuisines]")'), true);
+  await evaluate('document.querySelector("#tab-nearby").click()');
+  await ready();
   await evaluate('document.querySelector("[data-action=cuisines]").click()');
   assert.equal(await evaluate('document.activeElement.id'), 'cuisines');
   assert.equal(await evaluate('document.querySelector("#context .field input").id'), 'cuisines');
   await evaluate('document.querySelector(".bottom-nav [data-action=home]").click()');
+  await evaluate('document.querySelector("#tab-campus").click()');
+  await ready();
   assert.equal(await evaluate('document.querySelector("[data-carousel]").querySelectorAll(".meal-card").length'),1);
   const firstCard=await evaluate('document.querySelector(".meal-card h3").textContent');
   await evaluate('document.querySelector(".meal-carousel-nav button:last-child").click()');
@@ -164,7 +169,7 @@ try {
     await evaluate('window.scrollTo(0,0)');
     const shot=await send('Page.captureScreenshot',{format:'png'},sessionId);
     await fs.writeFile(path.join(os.tmpdir(),`trojanplate-live-${width}.png`),Buffer.from(shot.data,'base64'));
-    await evaluate('document.querySelector("[data-carousel]").scrollIntoView({block:"start"});window.scrollBy(0,-20)');
+    await evaluate('document.querySelector("[data-carousel]")?.scrollIntoView({block:"start"});window.scrollBy(0,-20)');
     const mealsShot=await send('Page.captureScreenshot',{format:'png'},sessionId);
     await fs.writeFile(path.join(os.tmpdir(),`trojanplate-dark-meals-${width}.png`),Buffer.from(mealsShot.data,'base64'));
   }

@@ -115,7 +115,7 @@ input[type=checkbox] { accent-color: var(--wine); width: 18px; height: 18px; }
 }
 /* Planner: cardinal accents, compact food imagery, and a persistent daily plan. */
 :root { --paper:#faf9f6; --surface:#fff; --wine:#990000; --wine-dark:#700000; --ink:#211c1c; --subtle:#6c6562; --line:#eae5e2; --blush:#fff3ef; --gold:#ffcc00; --display:'DM Sans',system-ui,sans-serif; }
-main { padding-block:32px 48px; }
+main { padding-block:32px 120px; } /* leave room for fixed bottom nav */
 h1 { font-size:clamp(2rem,4vw,3.4rem); font-weight:700; line-height:1.12; letter-spacing:-.055em; }
 h2 { font-size:1.55rem; font-weight:700; line-height:1.2; letter-spacing:-.04em; }
 h3 { font-size:1.1rem; }
@@ -127,7 +127,7 @@ h3 { font-size:1.1rem; }
 .home-heading h1 { margin-top:8px; }
 .lede { margin-top:10px; }
 .day-stamp { color:var(--subtle); font-size:.85rem; white-space:nowrap; }
-.tabs { display:flex; background:#eeebe6; padding:5px; border-radius:32px; width:min(440px,100%); margin-bottom:22px; }
+.tabs { display:flex; position:relative; z-index:1; background:#eeebe6; padding:5px; border-radius:32px; width:min(440px,100%); margin-bottom:22px; }
 .tabs button { width:50%; min-height:46px; border:0; border-radius:26px; background:transparent; color:var(--subtle); font-weight:700; }
 .tabs button[aria-selected=true] { background:var(--wine); color:white; box-shadow:0 2px 6px #99000020; }
 .food-hero { display:grid; grid-template-columns:1fr 40%; background:#f0e9dc; border-radius:22px; overflow:hidden; min-height:222px; }
@@ -169,7 +169,7 @@ h3 { font-size:1.1rem; }
 .results-note { font-size:.8rem; background:#f3f0e9; color:#655748; }
 .empty { padding:24px; background:white; border-radius:16px; border:1px dashed var(--line); }
 .empty p { margin-top:8px; }
-.bottom-nav { position:fixed; bottom:0; z-index:10; display:flex; justify-content:center; gap:8px; width:100%; padding:8px 16px calc(8px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:#ffffffef; backdrop-filter:blur(12px); }
+.bottom-nav { position:fixed; bottom:0; z-index:50; display:flex; justify-content:center; gap:8px; width:100%; padding:8px 16px calc(8px + env(safe-area-inset-bottom)); border-top:1px solid var(--line); background:#ffffffef; backdrop-filter:blur(12px); }
 .bottom-nav button { background:transparent; border:0; border-radius:12px; color:var(--subtle); width:min(170px,33%); min-height:48px; font-weight:600; font-size:.85rem; }
 .bottom-nav button[aria-current=page] { background:var(--blush); color:var(--wine); }
 .footer { margin-bottom:90px; font-size:.72rem; }

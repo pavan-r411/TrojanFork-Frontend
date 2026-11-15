@@ -6,15 +6,23 @@ The app is now connected to the live backend. Demo mode is off.
 
 If the backend is already running, open **http://127.0.0.1:8000/ui/** (or the same path on your configured backend port). Refresh this URL after code changes. A separate static server on port 5173 does not proxy the API.
 
-Otherwise run `npm start` from this folder. It starts the backend from its existing virtual environment and serves the app and API together on port 8000. Set `PORT` to change the port. Backend `.env` needs `OPENAI_API_KEY` and `GOOGLE_MAPS_API_KEY`, with Places API New enabled. Gemini is not used. Never add keys to browser configuration.
+Otherwise run `npm start` from this folder. It starts the backend from its existing virtual environment (with auto-reload on backend code changes) and serves the app and API together on port 8000. Set `PORT` to change the port. Backend `.env` needs `OPENAI_API_KEY` and `GOOGLE_MAPS_API_KEY`, with Places API New enabled. Gemini is not used for the student live path. Never add keys to browser configuration.
+
+## Sign-in and persistence
+
+Optional **Sign in / Create account** syncs profile and daily plans to the backend (`/v1/auth/*`, `/v1/profile`, `/v1/plans`). Local browsing still works: preferences and today’s plan snapshot persist in `localStorage`. Session nutrition logs remain tab-scoped (`sessionStorage`). Private server records are scoped to the authenticated user only.
+
+## Directions and swaps
+
+Every meal card, detail sheet, and selected plan line offers **Get directions** (Google Maps walking URL; destination Place ID / coordinates / address). Missing destinations show unavailable — never guessed. Swapping a selected meal opens a **confirm preview** (planned calories/protein, cash, swipes, restaurant) with **Undo last swap**.
 
 ## Live connection
 
 `api.js` uses `POST /v1/live/plan` for the daily recommendations. `config.js` uses a relative same-origin base URL (`/`), with no embedded backend host. For a separate deployment, set `globalThis.TROJANPLATE_API_BASE_URL` before loading the app, or update the public `apiBaseUrl` configuration; allow that origin in backend CORS. The API timeout is 120 seconds, with visible loading, retry and empty states.
 
-USC Dining reads official date-specific USC dining-hall feeds. Off-campus discovers nearby restaurants through Google Places and fetches their official published menu pages on demand; discovery and extraction run once per daily plan, followed by OpenAI ranking for each meal period. Published sources and missing nutrition remain visible in meal details. No demo meals or stored restaurant catalog are used as a live fallback. Straight-line distance is labeled accordingly; walking times remain unknown.
+USC Dining reads official date-specific USC dining-hall feeds. Off-campus discovers nearby restaurants through Google Places and fetches their official published menu pages on demand; discovery and extraction run once per daily plan, followed by OpenAI ranking for each meal period. Published sources and missing nutrition remain visible in meal details. No demo meals are used. TrojanPlate's saved nearby-restaurant menus can supplement live results; those cards are labeled “Saved menu” (backend `LIVE_SNAPSHOT_SUPPLEMENT=false` turns this off). Straight-line distance is labeled accordingly; walking times remain unknown.
 
-Profile preferences, diet, allergy/exclusion inputs, location, budget, daily targets and remaining nutrition are sent to the backend. Ingredient/allergen restrictions currently fail closed where evidence cannot establish eligibility. On weekends, an empty Lunch or Breakfast slot can mean the official menu lists Brunch instead; the API does not silently relabel that meal.
+Profile preferences, diet, allergy/exclusion inputs, location, budget, daily targets and remaining nutrition are sent to the backend. Allergies hide dining-hall dishes that USC tags with that allergen and off-campus dishes that name it; every other card carries an allergen label (`listed by USC: …`, `none listed by USC`, `not analyzed by USC`, or `unverified`) instead of the plan being cleared. On weekends, an empty Lunch or Breakfast slot can mean the official menu lists Brunch instead; the API does not silently relabel that meal.
 
 ## Plans and nutrition tracking
 

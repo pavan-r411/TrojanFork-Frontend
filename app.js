@@ -1,11 +1,14 @@
 import { nutritionState, loadNutrition, logMeal, removeLog, NutritionSummary, DailyNutritionDashboard, mealNutrition } from './nutrition.js';
-import { apiClient, toMeal } from './api.js';
+import { apiClient, toMeal, directionsUrl, directionsUnavailable } from './api.js';
 import { config } from './config.js';
 import { getOptions, meals } from './menu.js';
+import { getSessionToken, clearSession } from './auth.js';
+import { previewSwap } from './live-plan.js';
 
 const app = document.querySelector('#app');
 const profileLink = document.querySelector('#profile-link');
 const storageKey = 'trojanplate-profile-v1';
+const plansKey = 'trojanplate-plans-v3';
 const defaults = {
   goal: 'Eat balanced meals', diet: 'Any diet', allergies: '', exclusions: '',
   age: '', activity: '', height: '', weight: '', goalWeight: '', snacks: false,
@@ -19,17 +22,25 @@ const savedProfile = loadProfile();
 let profile = savedProfile ?? { ...defaults };
 let draft = { ...profile };
 let complete = Boolean(savedProfile);
+let sessionUser = null;
+let authMode = 'login';
+let authError = '';
+// Auth is optional for the pilot: planner works locally; sign-in enables server sync.
 let view = 'home';
 let mode = 'campus';
 let step = 0;
 let selections = {};
 const modeState = { campus: { selections: {}, locks: {} }, nearby: { selections: {}, locks: {} } };
+let planRevisions = { campus: 0, nearby: 0 };
+let undoSnapshot = null;
+let pendingSwap = null;
 try {
-  const saved = config.liveMode ? null : JSON.parse(localStorage.getItem('trojanplate-plans-v3'));
-  if (saved?.apiBaseUrl === config.apiBaseUrl && saved?.nutritionDemo === Boolean(config.nutritionDemo) && saved?.date === new Date().toLocaleDateString('en-CA')) {
+  const saved = JSON.parse(localStorage.getItem(plansKey));
+  if (saved?.apiBaseUrl === config.apiBaseUrl && saved?.date === new Date().toLocaleDateString('en-CA')) {
     for (const key of ['campus', 'nearby']) {
-      Object.assign(modeState[key], saved.states[key]);
-      Object.assign(settings[key], saved.settings[key]);
+      Object.assign(modeState[key], saved.states?.[key] || {});
+      Object.assign(settings[key], saved.settings?.[key] || {});
+      if (saved.revisions?.[key]) planRevisions[key] = saved.revisions[key];
     }
   }
 } catch {}
@@ -39,8 +50,29 @@ let requestError = '';
 let lastFocus = null;
 const mealCursors = {campus:{},nearby:{}};
 function persist() {
-  if(config.liveMode) return;
-  try { localStorage.setItem('trojanplate-plans-v3', JSON.stringify({ apiBaseUrl:config.apiBaseUrl, nutritionDemo:Boolean(config.nutritionDemo), date: new Date().toLocaleDateString('en-CA'), states: modeState, settings })); } catch {}
+  try {
+    const payload = {
+      apiBaseUrl: config.apiBaseUrl,
+      nutritionDemo: Boolean(config.nutritionDemo),
+      date: new Date().toLocaleDateString('en-CA'),
+      states: {
+        campus: { selections: modeState.campus.selections, locks: modeState.campus.locks },
+        nearby: { selections: modeState.nearby.selections, locks: modeState.nearby.locks },
+      },
+      settings: {
+        campus: { ...settings.campus, livePlan: settings.campus.livePlan || null },
+        nearby: { ...settings.nearby, livePlan: settings.nearby.livePlan || null },
+      },
+      revisions: planRevisions,
+    };
+    localStorage.setItem(plansKey, JSON.stringify(payload));
+  } catch {}
+  if (getSessionToken() && settings[mode].livePlan) {
+    const plan = settings[mode].livePlan;
+    apiClient.savePlan({ date: plan.date, mode: plan.mode, plan }).then(out => {
+      if (out?.revision != null) planRevisions[mode] = out.revision;
+    }).catch(() => {});
+  }
 }
 let toastTimer;
 function announce(message) {
@@ -51,7 +83,7 @@ function announce(message) {
 const localDate = () => new Date().toLocaleDateString('en-CA');
 const modeName = () => mode === 'campus' ? 'usc_dining' : 'off_campus';
 function profilePayload() {
-  return { goal: ({'Eat balanced meals':'balanced','Build muscle':'training_support','Fuel training':'training_support','Maintain weight':'maintenance'})[profile.goal] || 'balanced', dietary_preferences: profile.diet==='Any diet'?[]:[profile.diet.toLowerCase()], allergies: profile.allergies.split(/[,\n]/).map(x=>x.trim()).filter(Boolean), disliked_ingredients:profile.exclusions.split(',').map(x=>x.trim()).filter(Boolean), preferred_cuisines:settings[mode].cuisines, activity_level:profile.activity?.toLowerCase() || 'moderate', snacks:profile.snacks, targets:nutritionState.data?.targets, remaining:nutritionState.data ? Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,nutritionState.data.targets[key]===null || nutritionState.data.consumed[key]===null?null:Math.max(0,nutritionState.data.targets[key]-nutritionState.data.consumed[key])])) : null };
+  return { goal: ({'Eat balanced meals':'balanced','Build muscle':'build muscle','Fuel training':'training_support','Maintain weight':'maintenance','Gradually lose weight':'gradual weight loss','Gradually gain weight':'gradual weight gain'})[profile.goal] || 'balanced', dietary_preferences: profile.diet==='Any diet'?[]:[profile.diet.toLowerCase()], allergies: profile.allergies.split(/[,\n]/).map(x=>x.trim()).filter(Boolean), disliked_ingredients:profile.exclusions.split(',').map(x=>x.trim()).filter(Boolean), preferred_cuisines:settings[mode].cuisines, activity_level:profile.activity?.toLowerCase() || 'moderate', snacks:profile.snacks, targets:nutritionState.data?.targets, remaining:nutritionState.data ? Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,nutritionState.data.targets[key]===null || nutritionState.data.consumed[key]===null?null:Math.max(0,nutritionState.data.targets[key]-nutritionState.data.consumed[key])])) : null };
 }
 function adoptPlan(plan, key) {
   if (plan.mode !== (key==='campus'?'usc_dining':'off_campus') || plan.date !== localDate()) throw new Error('The server returned a plan for a different mode or date.');
@@ -74,34 +106,177 @@ function adoptPlan(plan, key) {
   if(mode===key) selections=chosen;
   persist();
 }
+let planRequest = 0;
 async function refreshPlan() {
   if (!config.apiBaseUrl && !config.nutritionDemo) { render(false); return; }
   const key=mode;
+  const planMode = key === 'campus' ? 'usc_dining' : 'off_campus';
+  const token = ++planRequest;
   loading=true; requestError=''; render(false);
   try {
     const current=settings[key];
-    const plan=config.nutritionDemo ? (await import('./nutrition-mock.js')).demoPlan(modeName(), localDate()) : await apiClient.generate({mode:modeName(), date:localDate(), previous_plan:current.livePlan, profile:profilePayload(), context:{meal_swipes_available:settings.campus.swipes,dining_hall:settings.campus.hall?.trim() || 'All halls',dining_dollars_cents:profile.diningDollars?Math.round(Number(profile.diningDollars)*100):null,origin:current.coordinates || {lat:34.0258,lng:-118.2854,label:current.origin || 'USC Village'},max_walk_m:Math.round((current.distance || .3)*1609.344),include_unknown_prices:Boolean(current.includeUnknownPrices),include_ai_estimates:true,per_meal_budget_cents:Math.round((current.perMeal ?? 15)*100),daily_budget_cents:Math.round((current.daily ?? 42)*100),preferred_cuisines:current.cuisines,locked_meal_ids:Object.entries(modeState[key].locks).filter(([,v])=>v).map(([meal])=>modeState[key].selections[meal]?.id)}});
+    const plan=config.nutritionDemo ? (await import('./nutrition-mock.js')).demoPlan(planMode, localDate()) : await apiClient.generate({mode:planMode, date:localDate(), previous_plan:current.livePlan, profile:profilePayload(), context:{meal_swipes_available:settings.campus.swipes,dining_hall:settings.campus.hall?.trim() || 'All halls',dining_dollars_cents:profile.diningDollars?Math.round(Number(profile.diningDollars)*100):null,origin:current.coordinates || {lat:34.0258,lng:-118.2854,label:current.origin || 'USC Village'},max_walk_m:Math.round((current.distance || .3)*1609.344),include_unknown_prices:Boolean(current.includeUnknownPrices),include_ai_estimates:true,per_meal_budget_cents:Math.round((current.perMeal ?? 15)*100),daily_budget_cents:Math.round((current.daily ?? 42)*100),preferred_cuisines:current.cuisines,locked_meal_ids:Object.entries(modeState[key].locks).filter(([,v])=>v).map(([meal])=>modeState[key].selections[meal]?.id)}});
+    if (token !== planRequest) return;
     adoptPlan(plan,key);
     if(config.nutritionDemo) (await import('./nutrition-mock.js')).updatePlan(plan);
     if(config.browserNutrition) (await import('./nutrition-local.js')).updatePlan(plan);
     syncNutrition();
-  } catch(error) { requestError=error.message; }
-  finally { loading=false; render(false); }
+  } catch(error) { if (token === planRequest) requestError=error.message; }
+  finally { if (token === planRequest) { loading=false; render(false); } }
 }
-async function selectLive(meal, id) {
+async function selectLive(meal, id, {skipPreview=false}={}) {
   const key=mode;
   if(modeState[key].locks[meal] || loading) return;
+  const currentId=modeState[key].selections[meal]?.id;
+  if(!skipPreview && currentId && currentId!==id) {
+    try {
+      pendingSwap={ meal, id, preview: previewSwap(settings[key].livePlan, meal.toLowerCase(), id, {
+        daily_budget_cents: Math.round((settings.nearby.daily ?? 42)*100),
+        meal_swipes_available: settings.campus.swipes,
+      })};
+      render(false);
+      document.querySelector('#swap-preview')?.showModal();
+      return;
+    } catch (error) { announce(error.message); return; }
+  }
   loading=true; render(false);
   try {
+    undoSnapshot={ key, plan: structuredClone(settings[key].livePlan), selections: structuredClone(modeState[key].selections), locks: structuredClone(modeState[key].locks) };
     const plan=config.nutritionDemo ? structuredClone(settings[key].livePlan) : await apiClient.swap({plan_id:settings[key].livePlan.plan_id,slot:meal.toLowerCase(),selected_recommendation_id:id,locked_meal_ids:Object.entries(modeState[key].locks).filter(([,v])=>v).map(([slot])=>modeState[key].selections[slot]?.id),plan_state:settings[key].livePlan});
     if(config.nutritionDemo) plan.slots.find(x=>x.slot===meal.toLowerCase()).selected_recommendation_id=id;
     adoptPlan(plan,key);
     if(config.nutritionDemo) (await import('./nutrition-mock.js')).updatePlan(plan);
     if(config.browserNutrition) (await import('./nutrition-local.js')).updatePlan(plan);
     syncNutrition();
-    announce(plan.changes || 'Meal updated. Your remaining plan has been recalculated.');
-  } catch(error) { requestError=error.message; }
-  finally { loading=false; render(false); }
+    announce((plan.changes || 'Meal updated.') + ' Undo available.');
+  } catch(error) { requestError=error.message; undoSnapshot=null; }
+  finally { loading=false; pendingSwap=null; render(false); }
+}
+
+function undoSwap() {
+  if(!undoSnapshot) return;
+  const { key, plan, selections: sel, locks } = undoSnapshot;
+  settings[key].livePlan = plan;
+  modeState[key].selections = sel;
+  modeState[key].locks = locks;
+  if(mode===key) selections=sel;
+  undoSnapshot=null;
+  persist();
+  if(config.browserNutrition) import('./nutrition-local.js').then(local=>{local.updatePlan(plan); syncNutrition();});
+  announce('Swap undone. Previous meal restored.');
+  render(false);
+}
+
+async function bootstrapSession() {
+  if(!getSessionToken()) return;
+  try {
+    sessionUser = await apiClient.me();
+    const remote = await apiClient.getProfile().catch(()=>null);
+    if(remote?.profile) {
+      const p = remote.profile;
+      profile = {
+        ...defaults,
+        ...profile,
+        goal: ({balanced:'Eat balanced meals','build muscle':'Build muscle',training_support:'Fuel training',maintenance:'Maintain weight','gradual weight loss':'Gradually lose weight','gradual weight gain':'Gradually gain weight'})[p.goal] || profile.goal,
+        diet: (p.dietary_preferences?.[0] ? p.dietary_preferences[0].replace(/^\w/,c=>c.toUpperCase()) : profile.diet) || profile.diet,
+        allergies: Array.isArray(p.allergies) ? p.allergies.join(', ') : profile.allergies,
+        exclusions: Array.isArray(p.disliked_ingredients) ? p.disliked_ingredients.join(', ') : profile.exclusions,
+        snacks: Boolean(p.snacks),
+        activity: p.activity_level ? p.activity_level.replace(/^\w/,c=>c.toUpperCase()) : profile.activity,
+      };
+      complete = true;
+      try { localStorage.setItem(storageKey, JSON.stringify(profile)); } catch {}
+    }
+    for (const key of ['campus','nearby']) {
+      const planMode = key==='campus'?'usc_dining':'off_campus';
+      try {
+        const saved = await apiClient.getPlan(localDate(), planMode);
+        if(saved?.plan?.plan_id) {
+          adoptPlan(saved.plan, key);
+          planRevisions[key] = saved.revision || 0;
+        }
+      } catch {}
+    }
+    if(view==='auth') view='home';
+  } catch {
+    clearSession();
+    sessionUser=null;
+  }
+}
+
+function authView() {
+  return `<section class="onboarding auth-panel">
+    <div class="intro" data-enter>
+      <div><span class="eyebrow">Trojan Fork</span><h1 tabindex="-1">Sign in to<br><em>save your plate.</em></h1></div>
+      <p>Your profile and daily plan sync to your account. Or continue locally in this browser.</p>
+    </div>
+    <form class="panel stack" id="auth-form">
+      <div class="form-title"><span class="eyebrow">${authMode==='login'?'Welcome back':'Create account'}</span><h2 tabindex="-1">${authMode==='login'?'Sign in':'Create account'}</h2></div>
+      ${authError?`<p role="alert">${escapeHtml(authError)}</p>`:''}
+      ${authMode==='register'?`<div class="field"><label for="display_name">Display name</label><input id="display_name" name="display_name" maxlength="80" required></div>`:''}
+      <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required></div>
+      <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="${authMode==='login'?'current-password':'new-password'}" minlength="8" required></div>
+      <div class="actions">
+        <button class="primary" type="submit">${authMode==='login'?'Sign in':'Create account'}</button>
+      </div>
+      <button type="button" class="quiet" data-action="auth-toggle">${authMode==='login'?'Need an account? Create one':'Already have an account? Sign in'}</button>
+      <button type="button" class="secondary" data-action="auth-skip">Continue without account</button>
+      <p class="small">Private records are scoped to your account. Local-only mode stores data in this browser.</p>
+    </form>
+  </section>`;
+}
+
+function directionsControl(item) {
+  const url = directionsUrl(item);
+  if (url) {
+    return `<a class="secondary directions-link" href="${escapeHtml(url)}" target="_blank" rel="noopener" data-action="directions">Get directions</a>`;
+  }
+  return `<button type="button" class="quiet" disabled title="${escapeHtml(directionsUnavailable(item) || 'Directions unavailable')}">Directions unavailable</button>`;
+}
+
+function emptySlot(meal, selectedOnly) {
+  const slot = settings[mode].livePlan?.slots.find(s => s.slot === meal.toLowerCase());
+  const empty = slot?.empty_state;
+  const message = selectedOnly
+    ? 'Choose a meal from Home to add it here.'
+    : (empty?.message || slot?.availability_note || 'The service returned no meals for these preferences.');
+  const actions = selectedOnly
+    ? `<button class="quiet" data-action="home">Browse meals</button>`
+    : (empty?.actions || [{id:'retry',label:'Retry'},{id:'review_filters',label:'Review filters'}]).map(action => {
+        const map = { retry:'refresh', review_filters:'settings', widen_radius:'settings', raise_budget:'settings', change_origin:'settings', change_hall:'settings', change_date:'settings' };
+        return `<button class="quiet" data-action="${map[action.id] || 'settings'}">${escapeHtml(action.label)}</button>`;
+      }).join(' ');
+  return `<div class="empty"><h3>${selectedOnly?'No meal selected yet':'No eligible meals returned'}</h3>
+    <p>${escapeHtml(message)}</p>
+    ${empty?.reason_code?`<p class="small">Reason: ${escapeHtml(empty.reason_code)}</p>`:''}
+    ${empty?.diagnostics?`<p class="small">Checked ${escapeHtml(String(empty.diagnostics.eligible_dishes ?? empty.diagnostics.pool_dishes ?? '—'))} eligible dishes · allergies kept</p>`:''}
+    <div class="actions">${actions}</div>
+    <p class="small">Allergy restrictions are never suggested for removal.</p>
+  </div>`;
+}
+
+function swapPreviewSheet() {
+  if(!pendingSwap?.preview) return '';
+  const p = pendingSwap.preview;
+  const fmt = (v, suffix='') => v==null ? 'unknown' : `${v}${suffix}`;
+  const money = cents => cents==null ? 'unknown' : dollars.format(cents/100);
+  return `<dialog id="swap-preview" class="swap-preview" open>
+    <form method="dialog" class="sheet stack">
+      <h2>Confirm meal swap</h2>
+      <p>Replace <strong>${escapeHtml(p.from?.title || 'current meal')}</strong> with <strong>${escapeHtml(p.to.title)}</strong>${p.delta.restaurant_changed?` at ${escapeHtml(p.to.venue)}`:''}.</p>
+      <ul class="swap-deltas">
+        <li>Calories: ${fmt(p.delta.calories,' kcal')} (planned)</li>
+        <li>Protein: ${fmt(p.delta.protein_g,' g')} (planned)</li>
+        <li>Cash: ${money(p.delta.cash_cents)} (tax/fees excluded)</li>
+        <li>Swipes: ${p.delta.swipes>=0?'+':''}${p.delta.swipes}</li>
+      </ul>
+      <p class="small">${escapeHtml(p.notes.join(' '))}</p>
+      <div class="actions">
+        <button type="button" class="secondary" data-action="swap-cancel">Cancel</button>
+        <button type="button" class="primary" data-action="swap-confirm" data-meal="${escapeHtml(pendingSwap.meal)}" data-id="${escapeHtml(pendingSwap.id)}">Confirm swap</button>
+      </div>
+    </form>
+  </dialog>`;
 }
 
 
@@ -178,7 +353,9 @@ function onboarding() {
         ${step ? '<button type="button" class="secondary" data-action="back">Back</button>' : complete ? '<button type="button" class="secondary" data-action="home">Cancel</button>' : ''}
         <button class="primary" type="submit">${step === pages.length - 1 ? 'Save profile' : 'Continue'} <span aria-hidden="true">→</span></button>
       </div>
-      <button type="button" class="quiet" data-action="home">Skip optional details / edit later</button>${complete?'<button type="button" class="quiet" data-action="clear">Clear saved data</button>':''}
+      <button type="button" class="quiet" data-action="home">Skip optional details / edit later</button>
+      ${sessionUser?'<button type="button" class="quiet" data-action="auth-signout">Sign out</button>':complete?'':'<button type="button" class="quiet" data-action="auth-skip">Back to sign in</button>'}
+      ${complete?'<button type="button" class="quiet" data-action="clear">Clear saved data</button>':''}
     </form>
   </section>`;
 }
@@ -188,17 +365,18 @@ function heroImage() {
   return safeUrl(url);
 }
 function foodArt(name) {
-  const categories=[[/salad|greens|kale|caesar/i,'salad'],[/pasta|spaghetti|gnocchi|penne|rigatoni|noodle/i,'pasta'],[/sandwich|toast|bagel|panini/i,'sandwich'],[/egg|omelet|scramble|breakfast/i,'egg'],[/fish|salmon|tuna/i,'fish'],[/chicken|turkey|poultry/i,'chicken'],[/burger/i,'burger'],[/rice|curry|stir.fry/i,'rice'],[/fruit|apple|berries/i,'apple'],[/soup|stew|ragout|lentil|bean|bowl/i,'bowl']];
+  const categories=[[/salad|greens|kale|caesar/i,'salad'],[/pasta|spaghetti|gnocchi|penne|rigatoni|noodle|tagliatelle|angel hair/i,'pasta'],[/sandwich|toast|bagel|panini|wrap/i,'sandwich'],[/yogurt|cottage|cheese/i,'bowl'],[/egg|omelet|scramble|breakfast|waffle|bagel/i,'egg'],[/fish|salmon|tuna/i,'fish'],[/chicken|turkey|poultry|beef|steak|brisket/i,'chicken'],[/burger/i,'burger'],[/rice|curry|stir.fry/i,'rice'],[/fruit|apple|berries/i,'apple'],[/soup|stew|ragout|lentil|bean|bowl/i,'bowl']];
   return 'assets/art/'+(categories.find(([pattern])=>pattern.test(name))?.[1] || 'plate')+'.png';
 }
 function safeUrl(value) { try { const url=new URL(value); return ['https:','http:'].includes(url.protocol)?url.href:''; } catch { return ''; } }
 function home() {
-  return `<section class="home-heading" data-enter><div><span class="eyebrow">${new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'})}</span><h1 tabindex="-1">Eat well.<br>Fight on.</h1><p class="lede">Your meals. Your goals. Your life at USC.</p></div><span class="day-stamp">Made for your campus.</span></section>
+  return `<section class="home-heading" data-enter><div><span class="eyebrow">${new Date().toLocaleDateString('en-US', {weekday:'long',month:'long',day:'numeric'})}</span><h1 tabindex="-1">Eat well.<br>Fight on.</h1><p class="lede">Trojan diet delights</p></div><span class="day-stamp">Made for your campus.</span></section>
+    ${sessionUser?`<p class="small">Signed in as ${escapeHtml(sessionUser.display_name || sessionUser.email)}. Plans sync to your account.</p>`:`<p class="small">Browsing locally. <button type="button" class="quiet" data-action="auth-open">Sign in</button> to sync profile and plans across devices.</p>`}
     ${NutritionSummary(true)}
     <div class="tabs" role="tablist" aria-label="Dining mode">${['campus','nearby'].map(key => `<button role="tab" id="tab-${key}" aria-controls="mode-panel" aria-selected="${mode===key}" tabindex="${mode===key ? 0 : -1}" data-action="mode" data-mode="${key}">${key==='campus' ? 'USC Dining' : 'Off-Campus'}</button>`).join('')}</div>
     <section id="mode-panel" role="tabpanel" aria-labelledby="tab-${mode}">
       <div class="food-hero ${heroImage()?'':'without-photo'}"><div><span class="hero-label">${mode==='campus' ? 'USC Dining' : 'Near campus'}</span><h2>${mode==='campus' ? 'Good food. Close to class.' : 'Take a delicious study break.'}</h2><p>${mode==='campus' ? 'Your dining hall options, in one place.' : 'Near '+escapeHtml(settings.nearby.origin)+', within your chosen radius.'}</p></div>${heroImage()?`<img src="${escapeHtml(heroImage())}" alt="${escapeHtml(getOptions(mode,'Breakfast',profile,settings[mode])[0]?.name || 'Meal from the menu service')}" onerror="this.hidden=true;this.parentElement.classList.add('without-photo')">`:'<img src="assets/art/plate.png" alt="" aria-hidden="true">'}</div>
-      <div class="filter-row"><button class="secondary cuisine-filter" data-action="cuisines">Cuisine: ${escapeHtml(settings[mode].cuisines.join(', ') || 'Any')}</button><button class="secondary" data-action="settings">${mode==='campus' ? settings.campus.swipes+' swipes available' : dollars.format(settings.nearby.perMeal)+' / meal'}</button><button class="secondary" data-action="edit">${escapeHtml(profile.diet)}</button>${mode==='nearby' ? `<button class="secondary" data-action="settings">${settings.nearby.distance} mi radius</button>` : ''}<button class="quiet" data-action="refresh">Refresh options ↻</button></div>
+      <div class="filter-row">${mode==='nearby' ? `<button class="secondary cuisine-filter" data-action="cuisines">Cuisine: ${escapeHtml(settings.nearby.cuisines.join(', ') || 'Any')}</button>` : ''}<button class="secondary" data-action="settings">${mode==='campus' ? settings.campus.swipes+' swipes available' : dollars.format(settings.nearby.perMeal)+' / meal'}</button><button class="secondary" data-action="edit">${escapeHtml(profile.diet)}</button>${mode==='nearby' ? `<button class="secondary" data-action="settings">${settings.nearby.distance} mi radius</button>` : ''}<button class="quiet" data-action="refresh">Refresh options ↻</button></div>
       <div class="planner-layout"><div>${results()}</div><aside>${summary()}</aside></div>
     </section>`;
 }
@@ -206,18 +384,23 @@ function summary() {
   const nearby = mode==='nearby';
   const live=settings[mode].livePlan?.summary;
   const remaining=live ? (nearby ? (live.remaining_budget_cents===null?'Unknown':dollars.format(live.remaining_budget_cents/100)) : live.remaining_swipes ?? 'Unknown') : 'Awaiting plan';
-  return `<div class="summary panel"><span class="eyebrow">Your day, coming together</span><h2>On your plate</h2><p>${Object.keys(selections).length} of ${profile.snacks ? 4 : 3} meals selected</p><div class="summary-progress"><span style="width:${Object.keys(selections).length/(profile.snacks?4:3)*100}%"></span></div>${meals.slice(0,profile.snacks?4:3).map(meal=>`<div class="summary-line"><span>${meal}</span><strong>${escapeHtml(selections[meal]?.name || 'Not picked yet')}</strong></div>`).join('')}<div class="summary-total"><span>${nearby ? 'Budget remaining' : 'Swipes remaining'}</span><strong>${remaining}</strong></div><p class="small">${live ? 'Nutrition coverage: '+escapeHtml(live.nutrition.coverage)+'. Verify uncertain menu and allergen details with the provider.' : 'Meal totals will appear when the service returns your plan.'}</p><button class="primary" data-action="plan">View my plan</button></div>`;
+  const cash = live?.total_cost_cents==null ? null : dollars.format(live.total_cost_cents/100);
+  return `<div class="summary panel"><span class="eyebrow">Your day, coming together</span><h2>On your plate</h2><p>${Object.keys(selections).length} of ${profile.snacks ? 4 : 3} meals selected · ${sessionUser?'Saved to account':'Saved in this browser'}</p><div class="summary-progress"><span style="width:${Object.keys(selections).length/(profile.snacks?4:3)*100}%"></span></div>${meals.slice(0,profile.snacks?4:3).map(meal=>{
+    const item=selections[meal];
+    const dir=item?directionsControl(item):'';
+    return `<div class="summary-line"><span>${meal}</span><strong>${escapeHtml(item?.name || 'Not picked yet')}</strong>${item?`<div class="summary-actions">${dir}</div>`:''}</div>`;
+  }).join('')}<div class="summary-total"><span>${nearby ? 'Cash remaining (tax/fees excluded)' : 'Swipes remaining'}</span><strong>${remaining}</strong></div>${nearby&&cash?`<p class="small">Cash subtotal (menu prices): ${cash}</p>`:''}${!nearby&&live?`<p class="small">Swipes used: ${live.swipes_used ?? 0}</p>`:''}<p class="small">${live ? 'Planned nutrition (not eaten): '+escapeHtml(live.nutrition.coverage)+'. Verify allergens with the provider.' : 'Meal totals will appear when the service returns your plan.'}</p>${undoSnapshot?`<button class="secondary" data-action="undo-swap">Undo last swap</button>`:''}<button class="primary" data-action="plan">View my plan</button></div>`;
 }
-function plan() { return `<section class="stack"><div class="heading"><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">A day that fuels you.</h1><p class="lede">Your selected meals stay with you as you explore.</p></div>${DailyNutritionDashboard()}${summary()}${results()}</section>`; }
+function plan() { return `<section class="stack"><div class="heading"><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">A day that fuels you.</h1><p class="lede">Your selected meals stay with you as you explore.</p></div>${DailyNutritionDashboard()}${summary()}${results(true)}</section>`; }
 
 function context() {
   const current = settings[mode];
   return `<section class="context stack heading">
     <div><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">Plan your day.</h1><p class="lede">${mode === 'campus' ? 'Set how many swipes you want to use today.' : 'Set your spending limits and walking origin. Distances use a straight-line radius.'}</p></div>
     <form class="panel stack" id="context">
-      <div class="field"><label for="cuisines">Preferred cuisines (optional, comma-separated)</label><input id="cuisines" name="cuisines" value="${escapeHtml(current.cuisines.join(', '))}" placeholder="Indian, Mexican, Italian"><p class="small">We prioritize these cuisines when matching dishes are available.</p></div>
       ${Object.keys(selections).length ? '<p>Applying new limits starts a fresh plan.</p>' : ''}
       ${mode === 'campus' ? numberField('swipes', 'Available meal swipes', current.swipes, 0, 20, 1, true) + `<div class="field"><label for="hall">Preferred dining hall</label><select id="hall" name="hall">${[['All halls','Any dining hall'],['evk',"Everybody’s Kitchen (EVK)"],['parkside','Parkside'],['university-village','USC Village']].map(([value,label])=>`<option value="${value}" ${current.hall===value?'selected':''}>${label}</option>`).join('')}</select></div>` : `
+        <div class="field"><label for="cuisines">Preferred cuisines (optional, comma-separated)</label><input id="cuisines" name="cuisines" value="${escapeHtml(current.cuisines.join(', '))}" placeholder="Indian, Mexican, Italian"><p class="small">We prioritize these cuisines when matching dishes are available.</p></div>
         <div class="fields">${numberField('perMeal', 'Max per meal ($)', current.perMeal, 0, 999, .01, true)}
         ${numberField('daily', 'Daily budget ($)', current.daily, 0, 999, .01, true)}</div>
         ${numberField('distance', 'Search radius (mi)', current.distance, .05, 1, .01, true)}<label class="check"><input type="checkbox" name="includeUnknownPrices" ${current.includeUnknownPrices?'checked':''}>Include meals with unpublished prices</label><p class="small">These meals are labeled price unavailable. Their fit to your budget cannot be verified.</p>
@@ -229,6 +412,7 @@ function context() {
 }
 
 const dollars = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+const sourceLabel = source => ({verified:'Official menu · today',needs_verification:'Live menu · confirm at venue',stale:'Saved menu · confirm at venue',estimated:'Estimated'})[source?.status] || source?.status || 'Source unknown';
 
 function results(selectedOnly = false) {
   const current = settings[mode];
@@ -243,9 +427,11 @@ function results(selectedOnly = false) {
       return `<section class="meal-section" aria-label="${meal}"><div class="meal-heading"><h3>${meal}${meal==='Snack' ? ' · optional' : ''}</h3><span>${options.length} ${options.length===1?'choice':'choices'}</span></div>${options.length ? `<div class="meal-carousel" data-carousel="${meal}" role="region" aria-roledescription="carousel" aria-label="${meal} recommendations" tabindex="0">${options.length>1?`<div class="meal-carousel-nav"><button class="secondary" data-action="meal-slide" data-meal="${meal}" data-step="-1" aria-label="Previous ${meal.toLowerCase()} option" ${cursor===0?'disabled':''}>←</button><span class="small" aria-live="polite">Option ${cursor+1} of ${options.length} <span aria-hidden="true">${options.map((_,i)=>i===cursor?'●':'○').join(' ')}</span></span><button class="secondary" data-action="meal-slide" data-meal="${meal}" data-step="1" aria-label="Next ${meal.toLowerCase()} option" ${cursor===options.length-1?'disabled':''}>→</button></div>`:''}<div class="meal-grid">${options.slice(cursor,cursor+1).map((item) => { const index=cursor;
         const selected = selections[meal]?.id === item.id;
         const locked = modeState[mode].locks[meal];
-        return `<article class="panel meal-card ${selected?'selected':''}"><div class="card-top"><span class="badge">${selected?'✓ Selected':index===0?'First pick':'Alternative'}</span><span class="small">${item.raw.source.status==='verified'?'Source checked':'Live menu'}</span></div>${safeUrl(item.raw.image_url)?`<img class="meal-photo" src="${escapeHtml(safeUrl(item.raw.image_url))}" alt="${escapeHtml(item.name)}" loading="lazy" onerror="this.hidden=true">`:""}<div class="meal-card-header"><img class="food-art" src="${foodArt(item.name)}" alt="" aria-hidden="true"><div><h3>${escapeHtml(item.name)}</h3><p class="venue">${escapeHtml(item.place)}</p></div></div><details class="meal-explanation"><summary>Why this meal</summary><p>${escapeHtml(item.description)}</p></details><div class="tags"><span>${escapeHtml(item.diet==='Any diet'?'Omnivore':item.diet)}</span><span>${mode==='nearby' ? item.raw.price_status==='estimated'?'AI-estimated '+dollars.format(item.raw.price_range_cents.low/100)+'–'+dollars.format(item.raw.price_range_cents.high/100)+' · budget uncertain':item.cost===null?'Price unavailable · budget unverified':dollars.format(item.cost) : 'Dining hall entry'}</span></div><p class="small">${mode==='nearby' ? item.distance===null?'Distance unavailable · ':Number(item.distance).toFixed(2)+' mi straight-line · ' : ''}${escapeHtml(item.raw.nutrition.status)} nutrition · allergens ${escapeHtml(item.raw.allergen_information_status)}</p>${mealNutrition(item.raw, meal.toLowerCase(), current.livePlan.date)}<div class="card-actions"><button class="${selected?'primary':'secondary'}" data-action="pick" data-meal="${meal}" data-id="${escapeHtml(item.id)}" aria-pressed="${selected}" ${locked?'disabled':''}>${selected?'Selected ✓':selections[meal]?'Swap to this':'Select meal'}</button><button class="quiet" data-action="details" data-meal="${meal}" data-id="${escapeHtml(item.id)}">Details</button></div>${selected ? `<button class="quiet lock" data-action="lock" data-meal="${meal}" aria-pressed="${Boolean(locked)}">${locked?'Unlock meal':'Lock meal'}</button>`:''}</article>`;
-      }).join('')}</div></div>`:`<div class="empty"><h3>${selectedOnly?'No meal selected yet':'No eligible meals returned'}</h3><p>${selectedOnly?'Choose a meal from Home to add it here.':escapeHtml(current.livePlan.slots.find(slot=>slot.slot===meal.toLowerCase())?.availability_note || 'The service returned no meals for these preferences. You can adjust optional limits or try again later.')}</p><button class="quiet" data-action="${selectedOnly?'home':'settings'}">${selectedOnly?'Browse meals':'Edit limits'}</button></div>`}</section>`;
-    }).join('')}</div>`;
+        const venueLink = directionsUrl(item) ? `<a class="venue-link" href="${escapeHtml(directionsUrl(item))}" target="_blank" rel="noopener">${escapeHtml(item.place)}</a>` : `<p class="venue">${escapeHtml(item.place)}</p>`;
+        const nutritionLabel = item.raw.nutrition?.display_status || (item.raw.nutrition?.status==='unknown'?'Nutrition unavailable':`${item.raw.nutrition.status} nutrition`);
+        return `<article class="panel meal-card ${selected?'selected':''}"><div class="card-top"><span class="badge">${selected?'✓ Selected':index===0?'First pick':'Alternative'}</span><span class="small">${item.raw.source.status==='verified'?'Source checked':item.raw.source.status==='stale'?'Saved menu':item.raw.source.kind==='curated_snapshot'?'Saved menu':'Live menu'}${item.raw.source.verified_at||item.raw.source.menu_date?` · checked ${escapeHtml(item.raw.source.menu_date || new Date(item.raw.source.verified_at).toLocaleDateString())}`:''}</span></div>${safeUrl(item.raw.image_url)?`<img class="meal-photo" src="${escapeHtml(safeUrl(item.raw.image_url))}" alt="${escapeHtml(item.raw.venue.name)} (venue photo)" loading="lazy" onerror="this.hidden=true">`:""}<div class="meal-card-header"><img class="food-art" src="${foodArt(item.name)}" alt="" aria-hidden="true"><div><h3>${escapeHtml(item.name)}</h3>${venueLink}</div></div><details class="meal-explanation"><summary>Why this meal</summary><p>${escapeHtml(item.description)}</p></details><div class="tags"><span>${escapeHtml(item.diet==='Any diet'?'Omnivore':item.diet)}</span>${item.cuisine?`<span>${escapeHtml(item.cuisine)}${item.raw.cuisine_status==='inferred'?' · AI guess':''}</span>`:''}<span>${mode==='nearby' ? item.raw.price_status==='estimated' && item.raw.price_range_cents ? 'AI-estimated '+dollars.format(item.raw.price_range_cents.low/100)+'–'+dollars.format(item.raw.price_range_cents.high/100)+' · budget uncertain':item.cost===null?'Price unavailable · budget unverified':dollars.format(item.cost)+' · tax/fees excluded' : 'Dining hall entry'}</span></div><p class="small">${mode==='nearby' ? item.distance===null?'Distance unavailable · ':Number(item.distance).toFixed(2)+' mi straight-line · ' : ''}${escapeHtml(nutritionLabel)} · allergens ${escapeHtml(item.raw.allergen_information_status)}</p>${mealNutrition(item.raw, meal.toLowerCase(), current.livePlan.date)}<div class="card-actions"><button class="${selected?'primary':'secondary'}" data-action="pick" data-meal="${meal}" data-id="${escapeHtml(item.id)}" aria-pressed="${selected}" ${locked?'disabled':''}>${selected?'Selected ✓':selections[meal]?'Swap to this':'Select meal'}</button><button class="quiet" data-action="details" data-meal="${meal}" data-id="${escapeHtml(item.id)}">Details</button>${directionsControl(item)}</div>${selected ? `<button class="quiet lock" data-action="lock" data-meal="${meal}" aria-pressed="${Boolean(locked)}">${locked?'Unlock meal':'Lock meal'}</button>`:''}</article>`;
+      }).join('')}</div></div>`:emptySlot(meal, selectedOnly)}</section>`;
+    }).join('')}${swapPreviewSheet()}</div>`;
 }
 function details(meal, id) {
   const item = getOptions(mode,meal,profile,settings[mode],selections).find(x=>String(x.id)===String(id));
@@ -256,22 +442,30 @@ function details(meal, id) {
   const title=document.createElement('h2'); title.textContent=item.name;
   const close=document.createElement('button'); close.className='quiet'; close.dataset.action='close'; close.textContent='Close ×';
   const info=document.createElement('p');
-  info.textContent=`${item.place}. ${item.description || ''} Source: ${item.raw.source.status}. Menu date: ${item.raw.source.menu_date}. Nutrition: ${item.raw.nutrition.status}; calories ${item.raw.nutrition.calories ?? 'unknown'}, protein ${item.raw.nutrition.protein_g ?? 'unknown'} g. Allergens: ${item.raw.allergen_information_status}. ${item.raw.payment_label || ''}`;
+  info.textContent=`${item.place}. ${item.description || ''} Source: ${sourceLabel(item.raw.source)}. Menu date: ${item.raw.source.menu_date ?? 'not dated'}.${item.raw.walking_minutes!=null?` About ${item.raw.walking_minutes} min walk (straight-line estimate).`:''} ${item.raw.nutrition?.display_status || 'Nutrition'}: calories ${item.raw.nutrition.calories ?? 'unavailable'}, protein ${item.raw.nutrition.protein_g ?? 'unavailable'} g. Allergens: ${item.raw.allergen_information_status}. ${item.raw.payment_label || ''}`;
   sheet.append(close,title,info);
-  if(safeUrl(item.raw.image_url)) { const img=document.createElement('img'); img.src=safeUrl(item.raw.image_url); img.alt=item.name; img.className='detail-photo'; sheet.append(img); }
+  if(safeUrl(item.raw.image_url)) { const img=document.createElement('img'); img.src=safeUrl(item.raw.image_url); img.alt=`${item.raw.venue.name} (venue photo)`; img.className='detail-photo'; sheet.append(img); if(item.raw.image_credit) { const credit=document.createElement('p'); credit.className='small'; credit.textContent=`Venue photo: ${item.raw.image_credit} via Google`; sheet.append(credit); } }
   if(safeUrl(item.raw.source.url)) { const link=document.createElement('a'); link.href=safeUrl(item.raw.source.url); link.textContent='View menu source ↗'; link.target='_blank'; link.rel='noopener'; sheet.append(link); }
+  const dirUrl=directionsUrl(item);
+  if(dirUrl) { const link=document.createElement('a'); link.href=dirUrl; link.className='secondary directions-link'; link.textContent='Get directions'; link.target='_blank'; link.rel='noopener'; sheet.append(link); }
+  else { const note=document.createElement('p'); note.className='small'; note.textContent=directionsUnavailable(item) || 'Directions unavailable'; sheet.append(note); }
   const select=document.createElement('button'); select.className='primary'; select.dataset.action='pick'; select.dataset.meal=meal; select.dataset.id=id; select.textContent='Select meal'; select.disabled=Boolean(modeState[mode].locks[meal]); sheet.append(select);
   dialog.showModal();
 }
 
 function render(focus = true) {
-  app.innerHTML = { onboarding, home, context, results, plan }[view]();
-  profileLink.hidden = view === 'onboarding';
-  document.querySelectorAll('.bottom-nav button').forEach(b=>b.setAttribute('aria-current', (b.dataset.action===view || b.dataset.action==='edit' && view==='onboarding')?'page':'false'));
+  app.innerHTML = { auth: authView, onboarding, home, context, results, plan }[view]();
+  profileLink.hidden = view === 'onboarding' || view === 'auth';
+  profileLink.textContent = sessionUser ? (sessionUser.display_name || sessionUser.email || 'Your profile') : 'Your profile';
+  document.querySelectorAll('.bottom-nav button').forEach(b=>{
+    const current = b.dataset.action === view || (b.dataset.action === 'edit' && view === 'onboarding');
+    if (current) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  });
   if (focus) {
-    const heading = app.querySelector(view === 'onboarding' ? '.form-title h2' : 'h1');
-    heading.focus({ preventScroll: true });
-    if (view === 'onboarding') heading.scrollIntoView({ block: 'nearest' });
+    const heading = app.querySelector(view === 'onboarding' || view === 'auth' ? '.form-title h2' : 'h1');
+    heading?.focus({ preventScroll: true });
+    if ((view === 'onboarding' || view === 'auth') && heading) heading.scrollIntoView({ block: 'nearest' });
     else window.scrollTo(0, 0);
   }
 }
@@ -284,6 +478,22 @@ function readDraft() {
 
 app.addEventListener('submit', event => {
   event.preventDefault();
+  if (event.target.id==='auth-form') {
+    const data=new FormData(event.target);
+    authError='';
+    const body={ email:String(data.get('email')||'').trim(), password:String(data.get('password')||'') };
+    if(authMode==='register') body.display_name=String(data.get('display_name')||'').trim() || body.email.split('@')[0];
+    loading=true; render(false);
+    (authMode==='login'?apiClient.login(body):apiClient.register(body)).then(async out=>{
+      sessionUser=out.user || await apiClient.me().catch(()=>null);
+      complete=true;
+      await bootstrapSession();
+      view=complete?'home':'onboarding';
+      announce(authMode==='login'?'Signed in. Your saved plan will load when available.':'Account created. Set your preferences next.');
+      if((config.apiBaseUrl || config.nutritionDemo) && view==='home' && !settings[mode].livePlan) refreshPlan();
+    }).catch(error=>{ authError=error.message; }).finally(()=>{ loading=false; render(); });
+    return;
+  }
   if (event.target.id==='nutrition-targets') {
     const data=new FormData(event.target);
     const targets=Object.fromEntries(['calories','protein_g','carbs_g','fat_g'].map(key=>[key,data.get(key)===''?null:Number(data.get(key))]));
@@ -306,6 +516,9 @@ app.addEventListener('submit', event => {
       } catch {
         // The profile can still be used until the tab closes.
       }
+      if (getSessionToken()) {
+        apiClient.saveProfile(profilePayload()).catch(()=>{});
+      }
       for (const key of ['campus','nearby']) { modeState[key].selections = {}; modeState[key].locks = {}; delete settings[key].livePlan; }
       selections = modeState[mode].selections;
       persist();
@@ -315,7 +528,7 @@ app.addEventListener('submit', event => {
   } else {
     const data = new FormData(event.target);
     settings[mode] = mode === 'campus'
-      ? { includeAIEstimates:true, swipes: Number(data.get('swipes')), cuisines: String(data.get('cuisines') || '').split(',').map(x=>x.trim()).filter(Boolean), hall:String(data.get('hall') || '').trim() || 'All halls' }
+      ? { includeAIEstimates:true, swipes: Number(data.get('swipes')), cuisines: [], hall:String(data.get('hall') || '').trim() || 'All halls' }
       : { includeAIEstimates:true, includeUnknownPrices:data.has('includeUnknownPrices'), perMeal: Number(data.get('perMeal')), daily: Number(data.get('daily')), distance: Number(data.get('distance')), cuisines: String(data.get('cuisines') || '').split(',').map(x=>x.trim()).filter(Boolean), origin: data.get('origin'), coordinates: data.get('origin')==='Current location' ? settings.nearby.coordinates : ({'USC Village':{lat:34.0258,lng:-118.2854,label:'USC Village'},'Tommy Trojan':{lat:34.0206,lng:-118.2854,label:'Tommy Trojan'},'Leavey Library':{lat:34.0217,lng:-118.2829,label:'Leavey Library'}})[data.get('origin')] };
     modeState[mode].selections = {};
     modeState[mode].locks = {};
@@ -371,25 +584,44 @@ document.addEventListener('click', event => {
       readDraft();
       step -= 1;
       break;
-    case 'mode':
-      if(loading) return;
-      mode = button.dataset.mode;
+    case 'mode': {
+      const next = button.dataset.mode;
+      if (!next || next === mode) break;
+      mode = next;
       selections = modeState[mode].selections;
       view = 'home';
-      if((config.apiBaseUrl || config.nutritionDemo) && !settings[mode].livePlan) { refreshPlan(); return; }
+      if ((config.apiBaseUrl || config.nutritionDemo) && !settings[mode].livePlan) { refreshPlan(); return; }
       break;
+    }
     case 'cuisines':
       view='context';render();document.querySelector('#cuisines')?.focus({preventScroll:true});return;
     case 'settings':
       view = 'context';
       break;
+    case 'auth-open':
+      authMode='login'; authError=''; view='auth'; break;
+    case 'auth-toggle':
+      authMode = authMode==='login'?'register':'login'; authError=''; break;
+    case 'auth-skip':
+      view = complete ? 'home' : 'onboarding'; break;
+    case 'auth-signout':
+      apiClient.logout().finally(()=>{ sessionUser=null; view='auth'; render(); announce('Signed out.'); }); return;
+    case 'undo-swap':
+      undoSwap(); return;
+    case 'swap-cancel':
+      pendingSwap=null; document.querySelector('#swap-preview')?.close(); render(false); return;
+    case 'swap-confirm':
+      document.querySelector('#swap-preview')?.close();
+      selectLive(meal, id, {skipPreview:true}); return;
     case 'clear':
       if(config.browserNutrition) import('./nutrition-local.js').then(local=>{local.clear(); syncNutrition();});
       for(const key of ['campus','nearby']) { modeState[key].selections={}; modeState[key].locks={}; delete settings[key].livePlan; }
       delete settings.nearby.coordinates; settings.nearby.origin='USC Village'; settings.nearby.cuisines=[];
       selections=modeState[mode].selections; profile={...defaults}; draft={...defaults}; complete=false;
-      try { localStorage.removeItem(storageKey); localStorage.removeItem('trojanplate-plans-v3'); } catch {}
-      view='home'; render(); announce('Saved profile and meal selections cleared.'); return;
+      try { localStorage.removeItem(storageKey); localStorage.removeItem(plansKey); } catch {}
+      if(getSessionToken()) apiClient.logout().finally(()=>{ sessionUser=null; view='auth'; render(); announce('Saved profile and meal selections cleared.'); });
+      else { view='auth'; render(); announce('Saved profile and meal selections cleared.'); }
+      return;
     case 'locate':
       if(!navigator.geolocation) { announce('Location unavailable. Choose a campus landmark.'); return; }
       navigator.geolocation.getCurrentPosition(position=>{settings.nearby.coordinates={lat:position.coords.latitude,lng:position.coords.longitude,label:'Current location'}; settings.nearby.origin='Current location'; const select=document.querySelector('#origin'); if(select) { if(![...select.options].some(x=>x.value==='Current location')) select.add(new Option('Current location','Current location')); select.value='Current location'; } announce('Current location set. Apply limits to update meals.');},()=>announce('Location was not available. Choose a campus landmark instead.'),{timeout:10000}); return;
@@ -415,7 +647,12 @@ render(false);
 document.addEventListener('keydown', event => { if (event.target.matches('[role=tab]') && ['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) { event.preventDefault(); const key=event.key==='Home'?'campus':event.key==='End'?'nearby':mode==='campus'?'nearby':'campus'; document.querySelector('#tab-'+key).click(); document.querySelector('#tab-'+key).focus(); } });
 
 document.querySelector('#details').addEventListener('close',()=>lastFocus?.isConnected && lastFocus.focus());
-if((config.apiBaseUrl || config.nutritionDemo) && !settings[mode].livePlan) refreshPlan();
+
+bootstrapSession().then(() => {
+  render(false);
+  if((config.apiBaseUrl || config.nutritionDemo) && view!=='auth' && !settings[mode].livePlan) refreshPlan();
+  else syncNutrition();
+});
 
 async function syncNutrition() {
   if (nutritionState.busy) return;

@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import { authHeaders, setSessionToken, clearSession, getSessionToken } from './auth.js';
 
 export class ApiError extends Error {
   constructor(message, code = 'API_UNAVAILABLE', retryable = true) {
@@ -41,14 +42,20 @@ export async function request(path, body, method = body ? 'POST' : 'GET') {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
+    const headers = { ...authHeaders() };
+    if (body) headers['Content-Type'] = 'application/json';
     const response = await fetch(`${config.apiBaseUrl.replace(/\/$/, '')}${path}`, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : {},
+      headers,
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
-    const payload = await response.json();
-    if (!response.ok) throw new ApiError(payload.error?.message || (typeof payload.detail==='string'?payload.detail:Array.isArray(payload.detail)?'Check your preferences and location values.':null) || 'The request could not be completed.', payload.error?.code, payload.error?.retryable);
+    if (response.status === 204) return null;
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const detail = payload.error?.message || (typeof payload.detail==='string'?payload.detail:Array.isArray(payload.detail)?'Check your preferences and location values.':null) || 'The request could not be completed.';
+      throw new ApiError(detail, payload.error?.code || payload.detail || 'API_ERROR', payload.error?.retryable ?? response.status >= 500);
+    }
     return payload;
   } catch (error) {
     if (error instanceof ApiError) throw error;
@@ -57,9 +64,28 @@ export async function request(path, body, method = body ? 'POST' : 'GET') {
     clearTimeout(timeout);
   }
 }
+
 export const apiClient = {
-  health: () => request('/api/health'),
-  saveProfile: profile => request('/api/profile', profile),
+  health: () => request('/health'),
+  register: async body => {
+    const out = await request('/v1/auth/register', body);
+    if (out?.token || out?.session_token) setSessionToken(out.token || out.session_token);
+    return out;
+  },
+  login: async body => {
+    const out = await request('/v1/auth/login', body);
+    if (out?.token || out?.session_token) setSessionToken(out.token || out.session_token);
+    return out;
+  },
+  logout: async () => {
+    try { if (getSessionToken()) await request('/v1/auth/logout', null, 'POST'); } finally { clearSession(); }
+  },
+  me: () => request('/v1/auth/me'),
+  getProfile: () => request('/v1/profile'),
+  saveProfile: profile => request('/v1/profile', profile, 'PUT'),
+  getPlan: (date, mode) => request(`/v1/plans?date=${encodeURIComponent(date)}&mode=${encodeURIComponent(mode)}`),
+  savePlan: body => request('/v1/plans', body, 'PUT'),
+  swapPreview: body => request('/v1/plans/swap-preview', body),
   menus: date => request(`/api/usc/menus?date=${encodeURIComponent(date)}`),
   nearby: origin => request(`/api/restaurants/nearby?lat=${origin.lat}&lng=${origin.lng}&max_walk_m=${origin.max_walk_m ?? 483}`),
   generate: async body => {
@@ -75,10 +101,25 @@ export const apiClient = {
 export function toMeal(item, slot) {
   return {
     id: item.id, meal: slot[0].toUpperCase() + slot.slice(1),
-    name: item.meal_title, place: item.venue.name, description: item.reason,
+    name: item.meal_title, place: item.venue.location_label ? `${item.venue.name} · ${item.venue.location_label}` : item.venue.name, description: item.reason,
     diet: item.dietary_tags?.join(', ') || 'Not specified',
     cost: item.venue.type === 'dining_hall' ? 1 : item.price_cents === null ? null : item.price_cents / 100,
     distance: item.walking_meters === null ? null : item.walking_meters / 1609.344,
     cuisine: item.cuisine, raw: item,
   };
+}
+
+/** Safe Maps directions URL from a recommendation. */
+export function directionsUrl(item) {
+  const d = item?.directions || item?.raw?.directions;
+  if (d?.available === false) return null;
+  const url = d?.url || item?.directions_url || item?.raw?.directions_url;
+  if (!url || !/^https:\/\/(www\.)?google\.com\/maps\//i.test(url)) return null;
+  return url;
+}
+
+export function directionsUnavailable(item) {
+  const d = item?.directions || item?.raw?.directions;
+  if (directionsUrl(item)) return null;
+  return d?.unavailable_reason || d?.notes || 'Directions unavailable — destination not verified.';
 }
