@@ -145,6 +145,7 @@ try {
   for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}
   await evaluate('document.querySelector("[data-mode=nearby]").click()');await ready();
   assert.equal(livePlanCalls,2);
+  for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("500")'),true);
   await evaluate('document.querySelector("[data-action=plan]").click()');
   assert.equal(await evaluate('document.querySelectorAll(".nutrition-log").length'),1);
@@ -163,6 +164,15 @@ try {
     await evaluate('window.scrollTo(0,0)');
     const shot=await send('Page.captureScreenshot',{format:'png'},sessionId);
     await fs.writeFile(path.join(os.tmpdir(),`trojanplate-live-${width}.png`),Buffer.from(shot.data,'base64'));
+    await evaluate('document.querySelector("[data-carousel]").scrollIntoView({block:"start"});window.scrollBy(0,-20)');
+    const mealsShot=await send('Page.captureScreenshot',{format:'png'},sessionId);
+    await fs.writeFile(path.join(os.tmpdir(),`trojanplate-dark-meals-${width}.png`),Buffer.from(mealsShot.data,'base64'));
+  }
+  await send('Emulation.setDeviceMetricsOverride',{width:390,height:900,deviceScaleFactor:1,mobile:true},sessionId);
+  for(const [action,name] of [['home','home'],['edit','profile']]) {
+    await evaluate(`document.querySelector('.bottom-nav [data-action=${action}]').click();window.scrollTo(0,0)`);
+    const shot=await send('Page.captureScreenshot',{format:'png'},sessionId);
+    await fs.writeFile(path.join(os.tmpdir(),`trojanplate-dark-${name}-390.png`),Buffer.from(shot.data,'base64'));
   }
   console.log('PASS: live API connection, session tracking across tabs, manual targets, logging and undo; legacy regressions.');
   console.log('PASS: unconfigured state, backend generate/swap, mode caches, locks, details, backend empty/error states, profile payload, API validation, and overflow at 320–1440px.');

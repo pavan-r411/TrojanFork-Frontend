@@ -36,3 +36,9 @@ In either dining tab, open **Edit limits** (the swipes or per-meal budget button
 
 
 AI estimates are now enabled by default for missing prices/macros on known menu dishes. The frontend no longer offers an estimation checkbox. Published values remain separate, and cards and totals retain AI-estimate labels, ranges and assumed portions. Backend clients may explicitly send `include_ai_estimates: false` for published-only behavior.
+
+## Dark design reference
+
+The frontend follows the latest supplied reference screenshots: a centered 440px single-column shell, warm ivory backgrounds, white cards, Outfit typography, burgundy gradient actions and nutrition panels, sage and gold accents, and white floating bottom navigation. This palette supersedes the earlier Claude.pdf dark theme. The visual layer is isolated in `design.css`, loaded after the existing base styles. Food illustrations in `assets/art` come from Microsoft Fluent Emoji (MIT; license included), are decorative and do not claim to be photographs of the actual dishes.
+
+Live requests, cuisine controls, estimates, session tracking, explicit meal logging, date switching, target entry and swipe-card behavior are retained. Long source/selection explanations use expandable details; estimated totals remain visibly labeled. No React/Tailwind migration or backend contract replacement was needed to apply the design. Browser regression tests cover all existing flows and viewport overflow from 320–1440px; screenshots cover the dashboard, meal cards, home and profile.
