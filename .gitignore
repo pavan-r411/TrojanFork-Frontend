@@ -5,3 +5,8 @@ node_modules/
 .DS_Store
 *.log
 .taste-skill/
+
+# Local outputs, caches and scratch; not part of the app
+Claude outputs/
+_to_delete/
+.vite/
