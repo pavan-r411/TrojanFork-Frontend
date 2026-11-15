@@ -116,6 +116,9 @@ try {
   assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   await evaluate('document.querySelector(".bottom-nav [data-action=home]").click();document.querySelector("[data-action=details]").click()');
   assert.equal(await evaluate('document.querySelector("dialog").open'),true);
+  assert.equal(await evaluate('document.querySelectorAll(".meal-card .meal-nutrients").length'),0);
+  assert.equal(await evaluate('document.querySelectorAll("#details .meal-nutrients span").length'),4);
+  assert.equal(await evaluate('Boolean(document.querySelector("#details [data-portion]"))'),true);
   await evaluate('document.querySelector("[data-action=close]").click()');
   for(const width of [320,375,390,768,1024,1440]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width<600},sessionId);

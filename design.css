@@ -302,3 +302,16 @@ a.venue-link:hover, .directions-link:hover { text-decoration:underline; }
 .nutrition-dashboard[open] .when-open { display:inline; }
 .nutrition-dashboard-body { padding-top:12px; }
 .nutrition-dashboard-body > .nutrition-line { justify-content:flex-end; }
+
+/* Meal cards show the essentials; detailed macros and portions live in the dialog. */
+.meal-carousel .meal-card { gap:10px; padding:18px; }
+.meal-card .food-art { width:48px; height:48px; flex-basis:48px; padding:5px; }
+.meal-card .lock { align-self:flex-end; min-height:36px; padding:6px 10px; }
+.meal-card .log-button { margin:0; min-height:44px; }
+.meal-card .meal-photo { max-height:140px; object-fit:cover; }
+#details { width:min(620px,calc(100% - 24px)); max-height:90svh; overflow:auto; }
+#details .sheet { gap:16px; }
+#details .meal-nutrients { grid-template-columns:repeat(2,minmax(0,1fr)); }
+#details .meal-detail-nutrition { gap:12px; }
+#details .meal-detail-nutrition > p { margin:0; }
+@media(min-width:768px) { .meal-carousel .meal-card { padding:20px; }.meal-card h3 { font-size:20px; } }
