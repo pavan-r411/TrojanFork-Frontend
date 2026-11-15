@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": null,
+  "outputDirectory": ".",
+  "rewrites": [
+    {
+      "source": "/v1/:path*",
+      "destination": "https://trojan-fork-backend-eosin.vercel.app/v1/:path*"
+    },
+    {
+      "source": "/api/:path*",
+      "destination": "https://trojan-fork-backend-eosin.vercel.app/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://trojan-fork-backend-eosin.vercel.app/health"
+    },
+    {
+      "source": "/ready",
+      "destination": "https://trojan-fork-backend-eosin.vercel.app/ready"
+    }
+  ]
+}
