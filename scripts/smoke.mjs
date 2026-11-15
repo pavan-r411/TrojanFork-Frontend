@@ -82,20 +82,20 @@ try {
   await evaluate('document.querySelector(".bottom-nav [data-action=home]").click()');
   await evaluate('document.querySelector("#tab-campus").click()');
   await ready();
-  assert.equal(await evaluate('document.querySelector("[data-carousel]").querySelectorAll(".meal-card").length'),1);
-  const firstCard=await evaluate('document.querySelector(".meal-card h3").textContent');
+  assert.equal(await evaluate('document.querySelector("[data-carousel]").querySelectorAll(".meal-card").length'),2);
+  const firstCard=await evaluate('document.querySelector(".meal-card.is-active h3").textContent');
   await evaluate('document.querySelector(".meal-carousel-nav button:last-child").click()');
-  assert.notEqual(await evaluate('document.querySelector(".meal-card h3").textContent'),firstCard);
+  assert.notEqual(await evaluate('document.querySelector(".meal-card.is-active h3").textContent'),firstCard);
   await evaluate('document.querySelector(".meal-carousel-nav button:first-child").click()');
-  assert.equal(await evaluate('document.querySelector(".meal-card h3").textContent'),firstCard);
-  for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector("[data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
+  assert.equal(await evaluate('document.querySelector(".meal-card.is-active h3").textContent'),firstCard);
+  for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.is-active [data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
   // First picks are seeded into the daily plan so "On your plate" updates immediately.
   assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   assert.equal(await evaluate('document.querySelector(".summary").textContent.includes("3 of 3 meals selected")'),true);
-  await evaluate('document.querySelector("[data-action=log]").click();document.querySelector("[data-action=log]").click()');
+  await evaluate('document.querySelector(".meal-card.is-active [data-action=log]").click();document.querySelector(".meal-card.is-active [data-action=log]").click()');
+  await evaluate('document.querySelector("[data-action=plan]").click()');
   for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("500")'),true);
-  await evaluate('document.querySelector("[data-action=plan]").click()');
   assert.equal(await evaluate('document.querySelectorAll(".nutrition-log").length'),1);
   await evaluate('document.querySelector("[data-action=unlog]").click()');
   for(let i=0;i<80;i++){if(await evaluate('!document.querySelector(".nutrition-log")'))break;await new Promise(r=>setTimeout(r,100));}
@@ -138,7 +138,7 @@ try {
   await send('Page.reload',{},sessionId);
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.selected"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelector(".meal-card.selected [data-action=pick]").disabled'),true);
-  await evaluate('document.querySelector("[data-action=edit]").click();document.querySelector("#onboarding").requestSubmit();document.querySelector("#allergies").value="peanuts";document.querySelector("#onboarding").requestSubmit();document.querySelector("#onboarding").requestSubmit();document.querySelector("#onboarding").requestSubmit()');
+  await evaluate('document.querySelector("[data-action=profile]").click();document.querySelector("[data-action=edit-preferences]").click();document.querySelector("#onboarding").requestSubmit();document.querySelector("#allergies").value="peanuts";document.querySelector("#onboarding").requestSubmit();document.querySelector("#onboarding").requestSubmit();document.querySelector("#onboarding").requestSubmit()');
   for(let i=0;i<80;i++){if(lastGenerate?.profile.allergies.includes('peanuts') && await evaluate('Boolean(document.querySelector(".empty"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(lastGenerate.profile.allergies[0],'peanuts');
   assert.equal(await evaluate('document.querySelectorAll("#app [data-action=pick]").length'),0);
@@ -152,26 +152,26 @@ try {
   await send('Page.reload',{},sessionId);await ready();
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector("[data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(livePlanCalls,1);
-  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),false);
-  await evaluate('document.querySelector(".nutrition-toggle").click()');
-  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),true);
-  await evaluate('document.querySelector(".nutrition-toggle").click()');
-  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),false);
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.selected"))'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelectorAll(".meal-card.selected").length'),3);
   assert.equal(await evaluate('document.querySelector(".summary").textContent.includes("3 of 3 meals selected")'),true);
   for(let i=0;i<80;i++){if(await evaluate('Boolean(document.querySelector(".meal-card.selected [data-action=log]:not(:disabled)"))'))break;await new Promise(r=>setTimeout(r,100));}
   await evaluate('document.querySelector(".meal-card.selected [data-action=log]").click()');
-  for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}
   await evaluate('document.querySelector("[data-mode=nearby]").click()');await ready();
   assert.equal(livePlanCalls,2);
-  for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats > div:first-child strong")?.textContent==="500"'))break;await new Promise(r=>setTimeout(r,100));}
-  assert.equal(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("500")'),true);
   await evaluate('document.querySelector("[data-action=plan]").click()');
+  // Unset targets intentionally open the panel with a Set targets CTA — close it to verify the toggle.
+  await evaluate('document.querySelector("details.nutrition-dashboard").open=false');
+  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),false);
+  await evaluate('document.querySelector(".nutrition-toggle").click()');
+  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),true);
+  assert.equal(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("500")'),true);
   assert.equal(await evaluate('document.querySelectorAll(".nutrition-log").length'),1);
-  await evaluate('document.querySelector("#nutrition-targets input[name=calories]").value="2200";document.querySelector("#nutrition-targets input[name=protein_g]").value="130";document.querySelector("#nutrition-targets").requestSubmit()');
+  await evaluate('document.querySelector("details.nutrition-targets-settings")?.setAttribute("open","");document.querySelector("#nutrition-targets input[name=calories]").value="2200";document.querySelector("#nutrition-targets input[name=protein_g]").value="130";document.querySelector("#nutrition-targets").requestSubmit()');
   for(let i=0;i<80;i++){if(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("2,200")'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelector(".nutrition-stats").textContent.includes("2,200")'),true);
+  await evaluate('document.querySelector(".nutrition-toggle").click()');
+  assert.equal(await evaluate('document.querySelector("details.nutrition-dashboard").open'),false);
   await evaluate('document.querySelector("[data-action=unlog]").click()');
   for(let i=0;i<80;i++){if(await evaluate('!document.querySelector(".nutrition-log")'))break;await new Promise(r=>setTimeout(r,100));}
   assert.equal(await evaluate('document.querySelectorAll(".nutrition-log").length'),0);
@@ -190,7 +190,7 @@ try {
     await fs.writeFile(path.join(os.tmpdir(),`trojanplate-dark-meals-${width}.png`),Buffer.from(mealsShot.data,'base64'));
   }
   await send('Emulation.setDeviceMetricsOverride',{width:390,height:900,deviceScaleFactor:1,mobile:true},sessionId);
-  for(const [action,name] of [['home','home'],['edit','profile']]) {
+  for(const [action,name] of [['home','home'],['profile','profile']]) {
     await evaluate(`document.querySelector('.bottom-nav [data-action=${action}]').click();window.scrollTo(0,0)`);
     const shot=await send('Page.captureScreenshot',{format:'png'},sessionId);
     await fs.writeFile(path.join(os.tmpdir(),`trojanplate-dark-${name}-390.png`),Buffer.from(shot.data,'base64'));
