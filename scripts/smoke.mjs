@@ -165,6 +165,7 @@ try {
   for(const width of [320,390,768,1440]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width<600},sessionId);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,`Live dashboard overflow at ${width}`);
+    if(width>=768) assert.ok(await evaluate('document.querySelector("main.wrap").getBoundingClientRect().width > innerWidth * .7'), `Desktop content stays phone-sized at ${width}`);
   }
   for(const width of [390,1440]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height:900,deviceScaleFactor:1,mobile:width<600},sessionId);
