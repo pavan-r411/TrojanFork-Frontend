@@ -113,17 +113,40 @@ export function toMeal(item, slot) {
   };
 }
 
-/** Safe Maps directions URL from a recommendation. */
+const _MAPS = /^https:\/\/(www\.)?google\.com\/maps\//i;
+
+function _mapsDirUrl(destination, placeId) {
+  if (!destination) return null;
+  const params = new URLSearchParams({ api: '1', destination: String(destination), travelmode: 'walking' });
+  if (placeId) params.set('destination_place_id', String(placeId));
+  return `https://www.google.com/maps/dir/?${params}`;
+}
+
+/** Safe Maps directions URL from a recommendation (with venue lat/address fallback). */
 export function directionsUrl(item) {
-  const d = item?.directions || item?.raw?.directions;
-  if (d?.available === false) return null;
-  const url = d?.url || item?.directions_url || item?.raw?.directions_url;
-  if (!url || !/^https:\/\/(www\.)?google\.com\/maps\//i.test(url)) return null;
-  return url;
+  const raw = item?.raw || item;
+  const d = item?.directions || raw?.directions;
+  // Food-truck pins without a fresh fix stay unavailable.
+  if (d?.available === false && d?.unavailable_reason === 'stale_truck_location') return null;
+  const url = d?.url || item?.directions_url || raw?.directions_url;
+  if (url && _MAPS.test(url)) return url;
+
+  const dest = d?.destination || {};
+  const venue = raw?.venue || item?.venue || {};
+  const lat = venue.lat ?? dest.lat;
+  const lng = venue.lng ?? dest.lng;
+  const address = venue.address || dest.address;
+  const placeId = venue.place_id || dest.place_id || null;
+  const name = venue.name || (typeof item?.place === 'string' ? item.place.split('·')[0].trim() : null);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) return _mapsDirUrl(`${lat},${lng}`, placeId);
+  if (address && String(address).trim()) return _mapsDirUrl(String(address).trim(), placeId);
+  if (name) return _mapsDirUrl(`${name}, University of Southern California, Los Angeles, CA`, placeId);
+  return null;
 }
 
 export function directionsUnavailable(item) {
-  const d = item?.directions || item?.raw?.directions;
   if (directionsUrl(item)) return null;
+  const raw = item?.raw || item;
+  const d = item?.directions || raw?.directions;
   return d?.unavailable_reason || d?.notes || 'Directions unavailable — destination not verified.';
 }

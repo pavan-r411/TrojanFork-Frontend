@@ -233,12 +233,29 @@ function authView() {
   </section>`;
 }
 
-function directionsControl(item) {
+function directionsControl(item, {compact=false}={}) {
   const url = directionsUrl(item);
   if (url) {
-    return `<a class="secondary directions-link" href="${escapeHtml(url)}" target="_blank" rel="noopener" data-action="directions">Get directions</a>`;
+    const cls = compact ? 'summary-directions' : 'secondary directions-link';
+    return `<a class="${cls}" href="${escapeHtml(url)}" target="_blank" rel="noopener" data-action="directions">Get directions</a>`;
   }
-  return `<button type="button" class="quiet" disabled title="${escapeHtml(directionsUnavailable(item) || 'Directions unavailable')}">Directions unavailable</button>`;
+  const reason = directionsUnavailable(item) || 'Directions unavailable';
+  if (compact) return `<span class="summary-directions is-unavailable" title="${escapeHtml(reason)}">Directions unavailable</span>`;
+  return `<button type="button" class="quiet directions-missing" disabled title="${escapeHtml(reason)}">Directions unavailable</button>`;
+}
+
+function summaryNutritionNote(live) {
+  if (!live) return 'Meal totals will appear when the service returns your plan.';
+  const status = live.nutrition_label || 'planned';
+  const coverage = live.nutrition?.coverage || '';
+  if (coverage === 'No meals selected') return 'No meals selected yet.';
+  if (coverage.includes('AI estimates')) {
+    return `<span class="summary-certainty is-estimated">Nutrition: AI estimates</span> Planned totals use midpoints and may differ from the plate. Confirm allergens with the provider.`;
+  }
+  if (coverage.includes('missing nutrients') || coverage.includes('unavailable')) {
+    return `<span class="summary-certainty is-unknown">Nutrition: partly unknown</span> Missing values stay blank — not zero. Confirm allergens with the provider.`;
+  }
+  return `<span class="summary-certainty is-published">Nutrition: published</span> Planned totals from menu values (${status}). Confirm allergens with the provider.`;
 }
 
 function emptySlot(meal, selectedOnly) {
@@ -394,9 +411,9 @@ function summary() {
   const cash = live?.total_cost_cents==null ? null : dollars.format(live.total_cost_cents/100);
   return `<div class="summary panel"><span class="eyebrow">Your day, coming together</span><h2>On your plate</h2><p>${Object.keys(selections).length} of ${profile.snacks ? 4 : 3} meals selected · ${sessionUser?'Saved to account':'Saved in this browser'}</p><div class="summary-progress"><span style="width:${Object.keys(selections).length/(profile.snacks?4:3)*100}%"></span></div>${meals.slice(0,profile.snacks?4:3).map(meal=>{
     const item=selections[meal];
-    const dir=item?directionsControl(item):'';
-    return `<div class="summary-line"><span>${meal}</span><strong>${escapeHtml(item?.name || 'Not picked yet')}</strong>${item?`<div class="summary-actions">${dir}</div>`:''}</div>`;
-  }).join('')}<div class="summary-total"><span>${nearby ? 'Cash remaining (tax/fees excluded)' : 'Swipes remaining'}</span><strong>${remaining}</strong></div>${nearby&&cash?`<p class="small">Cash subtotal (menu prices): ${cash}</p>`:''}${!nearby&&live?`<p class="small">Swipes used: ${live.swipes_used ?? 0}</p>`:''}<p class="small">${live ? 'Planned nutrition (not eaten): '+escapeHtml(live.nutrition.coverage)+'. Verify allergens with the provider.' : 'Meal totals will appear when the service returns your plan.'}</p>${undoSnapshot?`<button class="secondary" data-action="undo-swap">Undo last swap</button>`:''}<button class="primary" data-action="plan">View my plan</button></div>`;
+    const dir=item?directionsControl(item,{compact:true}):'';
+    return `<div class="summary-line"><div class="summary-meal"><span>${meal}</span><strong>${escapeHtml(item?.name || 'Not picked yet')}</strong></div>${item?`<div class="summary-actions">${dir}</div>`:''}</div>`;
+  }).join('')}<div class="summary-total"><span>${nearby ? 'Cash remaining (tax/fees excluded)' : 'Swipes remaining'}</span><strong>${remaining}</strong></div>${nearby&&cash?`<p class="small">Cash subtotal (menu prices): ${cash}</p>`:''}${!nearby&&live?`<p class="small">Swipes used: ${live.swipes_used ?? 0}</p>`:''}<p class="small summary-note">${summaryNutritionNote(live)}</p>${undoSnapshot?`<button class="secondary" data-action="undo-swap">Undo last swap</button>`:''}<button class="primary" data-action="plan">View my plan</button></div>`;
 }
 function plan() { return `<section class="stack"><div class="heading"><span class="eyebrow">${modeLabels[mode]}</span><h1 tabindex="-1">A day that fuels you.</h1><p class="lede">Your selected meals stay with you as you explore.</p></div>${DailyNutritionDashboard()}${summary()}${results(true)}</section>`; }
 

@@ -45,4 +45,6 @@ assert.equal(preview.to.title,'Other bowl');
 assert.equal(directionsUrl({directions:{available:true,url:'https://www.google.com/maps/dir/?api=1&destination=1,2&travelmode=walking'}})?.includes('google.com/maps'),true);
 assert.equal(directionsUrl({directions:{available:false,url:null}}),null);
 assert.match(directionsUnavailable({directions:{available:false,unavailable_reason:'missing_destination'}}),/missing_destination|unavailable/i);
+assert.match(directionsUrl({raw:{venue:{lat:34.02,lng:-118.28,name:'CAVA'}}}),/destination=34\.02/);
+assert.equal(directionsUrl({directions:{available:false,unavailable_reason:'stale_truck_location',url:null},raw:{venue:{lat:34.02,lng:-118.28}}}),null);
 console.log('PASS: swap preview deltas and directions availability helpers.');

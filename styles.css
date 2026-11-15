@@ -143,9 +143,11 @@ h3 { font-size:1.1rem; }
 .planner-layout aside { position:sticky; top:20px; }
 .summary { display:grid; gap:16px; padding:24px; }
 .summary h2 { font-size:1.6rem; }
-.summary-line { display:grid; gap:4px; padding:8px 0; border-bottom:1px solid var(--line); font-size:.8rem; }
-.summary-line>span { color:var(--subtle); }
-.summary-line strong { font-weight:500; }
+.summary-line { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; align-items:center; padding:12px 0; border-bottom:1px solid var(--line); font-size:.8rem; }
+.summary-meal { display:grid; gap:2px; min-width:0; }
+.summary-meal>span { color:var(--subtle); }
+.summary-meal strong { font-weight:500; display:block; overflow-wrap:anywhere; line-height:1.35; }
+.summary-actions { display:flex; align-items:center; margin:0; }
 .summary-progress { height:6px; border-radius:5px; overflow:hidden; background:#eeebe6; }
 .summary-progress span { display:block; height:100%; background:var(--wine); transition:width .2s; }
 .summary-total { display:flex; justify-content:space-between; gap:8px; font-size:.85rem; }
